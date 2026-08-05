@@ -1,0 +1,121 @@
+//#############################################################################
+//
+// FILE:   cla_pid.cla
+//
+// TITLE:  6-axis discrete PID with back-calculation anti-windup (CLA Task 1)
+//
+// DESCRIPTION:
+//   Runs on the Control Law Accelerator at the rate configured in cla_setup.c
+//   (default 1 kHz). Implements:
+//
+//     e[k]   = ref[k] - pos[k]
+//     u_raw  = kp*e + integ + kd_inv_dt*(e - e_prev)
+//     u      = clamp(u_raw, -u_max, +u_max)
+//     integ += ki_dt*e + (u - u_raw)   // back-calculation anti-windup
+//     e_prev = e
+//
+//   Back-calculation anti-windup: the term (u - u_raw) is zero when not
+//   saturated and negative/positive when saturated, pulling the integrator
+//   back toward a non-saturating value.
+//
+//   Tasks 2-8 are empty stubs required by the CLA vector table.
+//
+//#############################################################################
+
+#include "driverlib.h"
+#include "device.h"
+#include "cla_pid.h"
+
+//
+// Shared message RAMs (defined in cla_setup.c, placed by linker)
+//
+extern volatile CpuToClaMsg_t gCpuToCla;
+extern volatile ClaToCpuMsg_t gClaToCpu;
+extern ClaGains_t gClaGains;
+
+//
+// CLA-local state — integrators and previous errors.
+// Placed in Cla1DataRam0 (RAMLS5, CPU+CLA1 dual-access).
+// CPU can zero these via CLA_resetIntegrators() when needed.
+//
+#pragma DATA_SECTION(gInteg,   "Cla1DataRam0")
+float gInteg[CLA_NUM_AXES];
+
+#pragma DATA_SECTION(gErrPrev, "Cla1DataRam0")
+float gErrPrev[CLA_NUM_AXES];
+
+//
+// ============ CLA Task 1 — 6-axis PID ============
+//
+#pragma CODE_SECTION(Cla1Task1, "Cla1Prog")
+__interrupt void Cla1Task1(void)
+{
+    uint16_t k;
+    uint16_t sat_flags = 0U;
+
+    for (k = 0; k < CLA_NUM_AXES; k++) {
+        float ref   = gCpuToCla.ref[k];
+        float pos   = (float)gCpuToCla.pos[k];
+        float e     = ref - pos;
+
+        float kp    = gClaGains.kp[k];
+        float ki    = gClaGains.ki_dt[k];
+        float kd    = gClaGains.kd_inv_dt[k];
+        float umax  = gClaGains.u_max[k];
+
+        // PD + current integrator value (before integration update)
+        float u_raw = kp * e + gInteg[k] + kd * (e - gErrPrev[k]);
+
+        // Saturate
+        float u_sat;
+        if (u_raw > umax) {
+            u_sat = umax;
+            sat_flags |= (uint16_t)(1U << k);
+        } else if (u_raw < -umax) {
+            u_sat = -umax;
+            sat_flags |= (uint16_t)(1U << k);
+        } else {
+            u_sat = u_raw;
+        }
+
+        // Integrator update with back-calculation anti-windup:
+        //   when not saturated: (u_sat - u_raw) == 0, so no correction
+        //   when saturated:     (u_sat - u_raw) pulls integrator back
+        gInteg[k] += ki * e + (u_sat - u_raw);
+
+        // Update previous error
+        gErrPrev[k] = e;
+
+        // Publish output
+        gClaToCpu.u[k] = u_sat;
+    }
+
+    gClaToCpu.err_flags  = sat_flags;
+    gClaToCpu.cycle_count++;
+}
+
+//
+// ============ Task stubs (Tasks 2-8) ============
+//
+// All 8 CLA tasks must be defined; unused ones are empty.
+//
+#pragma CODE_SECTION(Cla1Task2, "Cla1Prog")
+__interrupt void Cla1Task2(void) {}
+
+#pragma CODE_SECTION(Cla1Task3, "Cla1Prog")
+__interrupt void Cla1Task3(void) {}
+
+#pragma CODE_SECTION(Cla1Task4, "Cla1Prog")
+__interrupt void Cla1Task4(void) {}
+
+#pragma CODE_SECTION(Cla1Task5, "Cla1Prog")
+__interrupt void Cla1Task5(void) {}
+
+#pragma CODE_SECTION(Cla1Task6, "Cla1Prog")
+__interrupt void Cla1Task6(void) {}
+
+#pragma CODE_SECTION(Cla1Task7, "Cla1Prog")
+__interrupt void Cla1Task7(void) {}
+
+#pragma CODE_SECTION(Cla1Task8, "Cla1Prog")
+__interrupt void Cla1Task8(void) {}

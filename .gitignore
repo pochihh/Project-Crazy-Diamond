@@ -1,0 +1,71 @@
+# OS and editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python / FastAPI / ROS Python packages
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# ROS 2 / colcon / CMake
+/ros2_ws/build/
+/ros2_ws/install/
+/ros2_ws/log/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+
+# React / Node / Vite
+node_modules/
+/web_ui/dist/
+/web_ui/coverage/
+/web_ui/.vite/
+.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Code Composer Studio generated build configurations
+/DSP_28379D/RAM/
+/DSP_28379D/FLASH/
+/DSP_28379D/Debug/
+/DSP_28379D/Release/
+/dsp/**/RAM/
+/dsp/**/FLASH/
+/dsp/**/Debug/
+/dsp/**/Release/
+/reference/**/CPU1_RAM/
+/reference/**/CPU1_FLASH/
+**/.settings/
+**/.launches/
+**/.theia/
+
+# Runtime logs, recordings, and ROS bags
+*.log
+/recordings/
+/data/recordings/
+rosbag2_*/
+*.db3
+*.mcap
+
+# Local Docker volumes
+/docker/data/
+/docker/volumes/

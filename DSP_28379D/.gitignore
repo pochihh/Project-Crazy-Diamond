@@ -1,0 +1,22 @@
+# CCS build output folders (one per build configuration)
+RAM/
+FLASH/
+# Legacy config names (removed)
+CPU1_RAM_VCU_CRC/
+CPU1_RAM_NON_VCU_CRC/
+CPU1_FLASH_VCU_CRC/
+CPU1_FLASH_NON_VCU_CRC/
+
+# CCS auto-generated files
+.launches/
+.settings/
+*.map
+*.out
+*.xml
+*.opt
+*.d
+*.obj
+*.pp
+
+# SysConfig generated output
+*.syscfg.bak

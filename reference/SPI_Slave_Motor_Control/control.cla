@@ -1,0 +1,38 @@
+#include "device.h"
+#include "driverlib.h"
+#include "util.h"
+
+extern volatile CpuToClaMsg gCpuToCla;
+extern volatile ClaToCpuMsg gClaToCpu;
+
+// CLA Task 1 – executes every 1 kHz
+#pragma CODE_SECTION(Cla1Task1, "Cla1Prog");
+__interrupt void Cla1Task1(void) {
+  // Cache input reference
+  float d1 = gCpuToCla.ref_1;
+  float d2 = gCpuToCla.ref_2;
+
+  // Copy the reference input for current timestamp
+  gClaToCpu.ref_1 = d1;
+  gClaToCpu.ref_2 = d2;
+
+  // ======= perform control algorithm ======
+  // Only clipping input reference for now
+  if (d1 > 1.0f)
+    d1 = 1.0f;
+  if (d1 < -1.0f)
+    d1 = -1.0f;
+  if (d2 > 1.0f)
+    d2 = 1.0f;
+  if (d2 < -1.0f)
+    d2 = -1.0f;
+
+  // output control output to CPU to perform motor driving
+  gClaToCpu.u_1 = d1;
+  gClaToCpu.u_2 = d2;
+  gClaToCpu.pos_1 = gCpuToCla.pos_1;
+  gClaToCpu.pos_2 = gCpuToCla.pos_2;
+
+  // Increment counter
+  gClaToCpu.cycleCount++;
+}
