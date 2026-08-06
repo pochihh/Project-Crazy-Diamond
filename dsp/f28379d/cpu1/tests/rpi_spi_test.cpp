@@ -237,7 +237,7 @@ std::uint32_t parse_number(const char* text, const char* name,
 void usage(const char* program)
 {
     std::cerr << "Usage:\n  " << program << " --self-test\n  " << program
-              << " --motor-power-off [device] [speed_hz] [frames]\n";
+              << " --motor-power-off [device] [speed_hz] [frames] [mode]\n";
 }
 
 }  // namespace
@@ -249,7 +249,7 @@ int main(int argc, char** argv)
         std::cout << (ok ? "self-test: PASS\n" : "self-test: FAIL\n");
         return ok ? 0 : 1;
     }
-    if (argc > 5 || argc < 2 || std::string(argv[1]) != "--motor-power-off") {
+    if (argc > 6 || argc < 2 || std::string(argv[1]) != "--motor-power-off") {
         usage(argv[0]);
         return 2;
     }
@@ -262,6 +262,10 @@ int main(int argc, char** argv)
         const std::uint32_t frame_count = argc > 4
                                               ? parse_number(argv[4], "frames", 1, 1'000'000)
                                               : 100;
+        std::uint8_t mode = argc > 5
+                                ? static_cast<std::uint8_t>(
+                                      parse_number(argv[5], "mode", 0, 3))
+                                : SPI_MODE_3;
 
         const int fd = open(device, O_RDWR);
         if (fd < 0) {
@@ -269,7 +273,6 @@ int main(int argc, char** argv)
                                      std::strerror(errno));
         }
 
-        std::uint8_t mode = SPI_MODE_3;
         std::uint8_t bits = 8;
         if (ioctl(fd, SPI_IOC_WR_MODE, &mode) < 0 ||
             ioctl(fd, SPI_IOC_WR_BITS_PER_WORD, &bits) < 0 ||
@@ -279,7 +282,8 @@ int main(int argc, char** argv)
             throw std::runtime_error("cannot configure SPI: " + error);
         }
 
-        std::cout << "Legacy DSP SPI bring-up: " << device << ", mode 3, "
+        std::cout << "Legacy DSP SPI bring-up: " << device << ", mode "
+                  << static_cast<unsigned>(mode) << ", "
                   << speed_hz << " Hz, " << frame_count << " measured frames\n";
 
         std::array<std::uint32_t, 4> results{};
