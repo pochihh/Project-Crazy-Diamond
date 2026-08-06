@@ -82,6 +82,9 @@ extern volatile CpuToClaMsg_t gCpuToCla;
 extern volatile ClaToCpuMsg_t gClaToCpu;
 extern ClaGains_t gClaGains;
 
+// CLA task entry point; CPU1 maps this address into MVECT1 during setup.
+__interrupt void Cla1Task1(void);
+
 //
 // ============ Gain update helper ============
 //

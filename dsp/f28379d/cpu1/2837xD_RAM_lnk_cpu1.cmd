@@ -127,15 +127,8 @@ SECTIONS
     /* DMA buffers — must be in GS RAM (accessible by DMA) */
    .dma_buffers     : > RAMGS9_DMA, PAGE = 1
 
-   /* CLA sections */
-   /* In RAM debug build, debugger loads CLA code directly to RAMLS4.       */
-   /* LOAD_START/SIZE/RUN_START symbols let cla_setup.c reference the copy. */
-   Cla1Prog         : LOAD = RAMLS4,
-                      RUN  = RAMLS4,
-                      LOAD_START(Cla1funcsLoadStart),
-                      LOAD_SIZE(Cla1funcsLoadSize),
-                      RUN_START(Cla1funcsRunStart),
-                      PAGE = 0
+   /* RAM debug build: debugger loads CLA code directly at its run address. */
+   Cla1Prog         : > RAMLS4,     PAGE = 0
 
    /* Hardware CLA message RAMs: fixed addresses, not configurable LS RAM.  */
    CpuToCla1MsgRAM  : > CPUTOCLA1MSGRAM, PAGE = 1
@@ -143,6 +136,7 @@ SECTIONS
 
    /* CLA data RAM (RAMLS5 configured CPU+CLA1 dual access in cla_setup.c)  */
    Cla1DataRam0     : > RAMLS5,     PAGE = 1
+   .scratchpad      : > RAMLS5,     PAGE = 1
 
 }
 

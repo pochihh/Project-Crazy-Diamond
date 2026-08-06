@@ -85,6 +85,8 @@ void CLA_setup(uint32_t rate_hz)
     EALLOW;
     MemCfg_setLSRAMControllerSel(MEMCFG_SECT_LS4, MEMCFG_LSRAMCONTROLLER_CPU_CLA1);
     MemCfg_setLSRAMControllerSel(MEMCFG_SECT_LS5, MEMCFG_LSRAMCONTROLLER_CPU_CLA1);
+    MemCfg_setCLAMemType(MEMCFG_SECT_LS4, MEMCFG_CLA_MEM_PROGRAM);
+    MemCfg_setCLAMemType(MEMCFG_SECT_LS5, MEMCFG_CLA_MEM_DATA);
     EDIS;
 
     //
@@ -108,6 +110,11 @@ void CLA_setup(uint32_t rate_hz)
     //
     SysCtl_enablePeripheral(SYSCTL_PERIPH_CLK_CLA1);
 
+    // Type-1 CLA vectors contain the full 16-bit task entry address.
+#pragma diag_suppress=770
+    CLA_mapTaskVector(CLA1_BASE, CLA_MVECT_1, (uint16_t)&Cla1Task1);
+#pragma diag_warning=770
+
     //
     // Route CPU Timer 0 to CLA Task 1
     //
@@ -124,9 +131,9 @@ void CLA_setup(uint32_t rate_hz)
     EDIS;
 
     //
-    // Enable all CLA tasks
+    // Only Task 1 is used.
     //
-    CLA_enableTasks(CLA1_BASE, CLA_TASKFLAG_ALL);
+    CLA_enableTasks(CLA1_BASE, CLA_TASKFLAG_1);
 
     //
     // Register and enable CLA Task 1 EOT interrupt (PIE 11.1).

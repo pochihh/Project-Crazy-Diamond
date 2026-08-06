@@ -149,8 +149,10 @@ void main(void)
     SpiDma_setRxCallback(&onSpiFrame);
 
     // --- CLA PID ---
-    // Set default gains (kp=0.1, ki=0, kd=0, u_max=1.0 for all axes).
-    // Override via CLA_setGains() or via SPI command after startup.
+    CLA_setTask1DoneCallback(&onClaTask1Done);
+    CLA_setup(CLA_CONTROL_RATE_HZ);
+
+    // Set default gains after CLA_setup() initializes its shared memory.
     for (k = 0U; k < 6U; k++) {
         CLA_setGains(k,
                      0.1f,   // kp
@@ -159,8 +161,6 @@ void main(void)
                      1.0f,   // u_max
                      (float)CLA_CONTROL_RATE_HZ);
     }
-    CLA_setTask1DoneCallback(&onClaTask1Done);
-    CLA_setup(CLA_CONTROL_RATE_HZ);
 
     // Prime initial state
     for (k = 0U; k < 6U; k++) {
