@@ -1,6 +1,6 @@
 // Raspberry Pi SPI bring-up test for the currently implemented DSP v2/v3 frames.
 // Build: g++ -std=c++17 -O2 -Wall -Wextra -pedantic rpi_spi_test.cpp -o rpi_spi_test
-// Run:   ./rpi_spi_test --motor-power-off [/dev/spidev0.0] [speed_hz] [frames]
+// Run:   ./rpi_spi_test --motor-power-off [/dev/spidev0.0] [speed_hz] [frames] [mode]
 //
 // This is intentionally not the planned v4/80-word production protocol. The
 // current DSP ignores cmd and interprets all references as position targets, so
@@ -23,7 +23,6 @@
 namespace {
 
 constexpr std::size_t kFrameWords = 64;
-constexpr std::size_t kFrameBytes = kFrameWords * 2;
 constexpr std::size_t kCommandWords = 17;
 constexpr std::size_t kTelemetryWords = 57;
 constexpr std::uint16_t kCommandHeader = 0x55AA;
@@ -32,7 +31,6 @@ constexpr std::uint16_t kTelemetryHeader = 0xAA55;
 constexpr std::uint16_t kTelemetryVersion = 3;
 
 using Words = std::array<std::uint16_t, kFrameWords>;
-using Bytes = std::array<std::uint8_t, kFrameBytes>;
 
 std::uint16_t crc16_byte(std::uint16_t crc, std::uint8_t byte)
 {
@@ -106,26 +104,6 @@ void build_command(Words& words, std::uint32_t sequence)
     words[kCommandWords - 1] = crc16_words(words.data(), kCommandWords - 1);
 }
 
-Bytes to_bytes(const Words& words)
-{
-    Bytes bytes{};
-    for (std::size_t i = 0; i < words.size(); ++i) {
-        bytes[2 * i] = static_cast<std::uint8_t>(words[i] >> 8);
-        bytes[2 * i + 1] = static_cast<std::uint8_t>(words[i]);
-    }
-    return bytes;
-}
-
-Words to_words(const Bytes& bytes)
-{
-    Words words{};
-    for (std::size_t i = 0; i < words.size(); ++i) {
-        words[i] = static_cast<std::uint16_t>(
-            (static_cast<std::uint16_t>(bytes[2 * i]) << 8) | bytes[2 * i + 1]);
-    }
-    return words;
-}
-
 struct Telemetry {
     std::size_t header_offset = 0;
     std::uint32_t timestamp_us = 0;
@@ -197,20 +175,18 @@ bool self_test()
 
     Words command{};
     build_command(command, 0x12345678U);
-    const Words round_trip = to_words(to_bytes(command));
-    return round_trip == command && round_trip[2] == 0x5678U &&
-           round_trip[3] == 0x1234U &&
-           crc16_words(round_trip.data(), kCommandWords - 1) == round_trip[16];
+    return command[2] == 0x5678U && command[3] == 0x1234U &&
+           crc16_words(command.data(), kCommandWords - 1) == command[16];
 }
 
-int transfer(int fd, std::uint32_t speed_hz, const Bytes& tx, Bytes& rx)
+int transfer(int fd, std::uint32_t speed_hz, const Words& tx, Words& rx)
 {
     spi_ioc_transfer transfer{};
     transfer.tx_buf = reinterpret_cast<std::uintptr_t>(tx.data());
     transfer.rx_buf = reinterpret_cast<std::uintptr_t>(rx.data());
-    transfer.len = static_cast<std::uint32_t>(tx.size());
+    transfer.len = static_cast<std::uint32_t>(tx.size() * sizeof(tx[0]));
     transfer.speed_hz = speed_hz;
-    transfer.bits_per_word = 8;
+    transfer.bits_per_word = 16;
     return ioctl(fd, SPI_IOC_MESSAGE(1), &transfer);
 }
 
@@ -265,7 +241,7 @@ int main(int argc, char** argv)
         std::uint8_t mode = argc > 5
                                 ? static_cast<std::uint8_t>(
                                       parse_number(argv[5], "mode", 0, 3))
-                                : SPI_MODE_3;
+                                : SPI_MODE_1;
 
         const int fd = open(device, O_RDWR);
         if (fd < 0) {
@@ -273,7 +249,7 @@ int main(int argc, char** argv)
                                      std::strerror(errno));
         }
 
-        std::uint8_t bits = 8;
+        std::uint8_t bits = 16;
         if (ioctl(fd, SPI_IOC_WR_MODE, &mode) < 0 ||
             ioctl(fd, SPI_IOC_WR_BITS_PER_WORD, &bits) < 0 ||
             ioctl(fd, SPI_IOC_WR_MAX_SPEED_HZ, &speed_hz) < 0) {
@@ -298,10 +274,9 @@ int main(int argc, char** argv)
         for (std::uint32_t frame = 0; frame < frame_count + 2; ++frame) {
             Words tx_words{};
             build_command(tx_words, frame);
-            const Bytes tx_bytes = to_bytes(tx_words);
-            Bytes rx_bytes{};
+            Words rx_words{};
 
-            if (transfer(fd, speed_hz, tx_bytes, rx_bytes) < 0) {
+            if (transfer(fd, speed_hz, tx_words, rx_words) < 0) {
                 if (frame >= 2) {
                     ++transfer_errors;
                 }
@@ -313,7 +288,6 @@ int main(int argc, char** argv)
                 continue;
             }
 
-            const Words rx_words = to_words(rx_bytes);
             Telemetry telemetry;
             const ParseError error = parse_telemetry(rx_words, telemetry);
             ++results[static_cast<std::size_t>(error)];
