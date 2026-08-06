@@ -10,6 +10,7 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+.local/
 
 # Python / FastAPI / ROS Python packages
 __pycache__/
@@ -44,10 +45,6 @@ yarn-error.log*
 pnpm-debug.log*
 
 # Code Composer Studio generated build configurations
-/DSP_28379D/RAM/
-/DSP_28379D/FLASH/
-/DSP_28379D/Debug/
-/DSP_28379D/Release/
 /dsp/**/RAM/
 /dsp/**/FLASH/
 /dsp/**/Debug/
@@ -57,6 +54,8 @@ pnpm-debug.log*
 **/.settings/
 **/.launches/
 **/.theia/
+/dsp/f28379d/cpu*/.clangd
+/dsp/f28379d/cpu*/targetConfigs/
 
 # Runtime logs, recordings, and ROS bags
 *.log
