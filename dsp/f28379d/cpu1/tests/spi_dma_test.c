@@ -540,7 +540,7 @@ __interrupt void cs_isr(void)
         }
     }
 
-    Interrupt_clearACKGroup(INTERRUPT_ACK_GROUP1);
+    Interrupt_clearACKGroup(INTERRUPT_ACK_GROUP12);
 }
 
 //

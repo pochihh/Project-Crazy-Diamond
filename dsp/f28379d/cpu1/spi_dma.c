@@ -352,7 +352,7 @@ __interrupt void SpiDma_csIsr(void)
         }
     }
 
-    Interrupt_clearACKGroup(INTERRUPT_ACK_GROUP1);
+    Interrupt_clearACKGroup(INTERRUPT_ACK_GROUP12);
 }
 
 //
