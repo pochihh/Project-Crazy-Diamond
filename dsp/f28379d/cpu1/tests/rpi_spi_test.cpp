@@ -1,6 +1,6 @@
 // Raspberry Pi SPI bring-up test for the currently implemented DSP v2/v3 frames.
 // Build: g++ -std=c++17 -O2 -Wall -Wextra -pedantic rpi_spi_test.cpp -o rpi_spi_test
-// Run:   ./rpi_spi_test --motor-power-off [/dev/spidev0.0] [speed_hz] [frames] [mode]
+// Run:   ./rpi_spi_test --motor-power-off [/dev/spidev0.0] [speed_hz] [frames] [mode] [rate_hz]
 //
 // This is intentionally not the planned v4/80-word production protocol. The
 // current DSP ignores cmd and interprets all references as position targets, so
@@ -18,6 +18,7 @@
 #include <stdexcept>
 #include <string>
 #include <sys/ioctl.h>
+#include <thread>
 #include <unistd.h>
 
 namespace {
@@ -213,7 +214,7 @@ std::uint32_t parse_number(const char* text, const char* name,
 void usage(const char* program)
 {
     std::cerr << "Usage:\n  " << program << " --self-test\n  " << program
-              << " --motor-power-off [device] [speed_hz] [frames] [mode]\n";
+              << " --motor-power-off [device] [speed_hz] [frames] [mode] [rate_hz]\n";
 }
 
 }  // namespace
@@ -225,7 +226,7 @@ int main(int argc, char** argv)
         std::cout << (ok ? "self-test: PASS\n" : "self-test: FAIL\n");
         return ok ? 0 : 1;
     }
-    if (argc > 6 || argc < 2 || std::string(argv[1]) != "--motor-power-off") {
+    if (argc > 7 || argc < 2 || std::string(argv[1]) != "--motor-power-off") {
         usage(argv[0]);
         return 2;
     }
@@ -242,6 +243,10 @@ int main(int argc, char** argv)
                                 ? static_cast<std::uint8_t>(
                                       parse_number(argv[5], "mode", 0, 3))
                                 : SPI_MODE_1;
+        const std::uint32_t rate_hz = argc > 6
+                                          ? parse_number(argv[6], "rate_hz", 1, 100'000)
+                                          : 1'000;
+        const auto period = std::chrono::nanoseconds(1'000'000'000ULL / rate_hz);
 
         const int fd = open(device, O_RDWR);
         if (fd < 0) {
@@ -260,7 +265,8 @@ int main(int argc, char** argv)
 
         std::cout << "Legacy DSP SPI bring-up: " << device << ", mode "
                   << static_cast<unsigned>(mode) << ", "
-                  << speed_hz << " Hz, " << frame_count << " measured frames\n";
+                  << speed_hz << " Hz, " << rate_hz << " Hz target, "
+                  << frame_count << " measured frames\n";
 
         std::array<std::uint32_t, 4> results{};
         std::uint32_t transfer_errors = 0;
@@ -268,64 +274,103 @@ int main(int argc, char** argv)
         std::uint32_t previous_timestamp = 0;
         bool have_timestamp = false;
         bool dumped_invalid = false;
-        const auto start = std::chrono::steady_clock::now();
+        std::uint32_t deadline_misses = 0;
+        using Clock = std::chrono::steady_clock;
+        Clock::duration max_start_lateness{};
+        Clock::duration max_transfer{};
+        Clock::duration total_transfer{};
+        Clock::time_point first_start;
+        Clock::time_point last_start;
+        bool have_start = false;
+        auto scheduled_start = Clock::now();
 
         // Two pipeline warm-up transactions are intentionally not scored.
         for (std::uint32_t frame = 0; frame < frame_count + 2; ++frame) {
+            const bool measured = frame >= 2;
+            const auto frame_start = Clock::now();
+            if (measured) {
+                if (!have_start) {
+                    first_start = frame_start;
+                    have_start = true;
+                }
+                last_start = frame_start;
+                if (frame_start > scheduled_start) {
+                    const auto lateness = frame_start - scheduled_start;
+                    if (lateness > max_start_lateness) {
+                        max_start_lateness = lateness;
+                    }
+                }
+            }
+
             Words tx_words{};
             build_command(tx_words, frame);
             Words rx_words{};
 
-            if (transfer(fd, speed_hz, tx_words, rx_words) < 0) {
-                if (frame >= 2) {
+            const auto transfer_start = Clock::now();
+            const bool transfer_ok = transfer(fd, speed_hz, tx_words, rx_words) >= 0;
+            const auto transfer_time = Clock::now() - transfer_start;
+            if (measured) {
+                total_transfer += transfer_time;
+                if (transfer_time > max_transfer) {
+                    max_transfer = transfer_time;
+                }
+            }
+
+            if (!transfer_ok) {
+                if (measured) {
                     ++transfer_errors;
                 }
-                usleep(1000);
-                continue;
-            }
-            usleep(1000);  // leave ample DSP DMA re-arm time during bring-up
-            if (frame < 2) {
-                continue;
+            } else if (measured) {
+                Telemetry telemetry;
+                const ParseError error = parse_telemetry(rx_words, telemetry);
+                ++results[static_cast<std::size_t>(error)];
+                if (error != ParseError::none) {
+                    if (!dumped_invalid) {
+                        print_words(rx_words);
+                        dumped_invalid = true;
+                    }
+                } else {
+                    if (have_timestamp &&
+                        static_cast<std::int32_t>(telemetry.timestamp_us -
+                                                  previous_timestamp) <= 0) {
+                        ++timestamp_errors;
+                    }
+                    previous_timestamp = telemetry.timestamp_us;
+                    have_timestamp = true;
+
+                    const std::uint32_t measured_frame = frame - 2;
+                    if (measured_frame < 5 || measured_frame % 1000 == 0) {
+                        std::cout << '[' << measured_frame << "] ts_us="
+                                  << telemetry.timestamp_us << " header_word="
+                                  << telemetry.header_offset << " pos=[";
+                        for (std::size_t axis = 0; axis < telemetry.position.size(); ++axis) {
+                            std::cout << (axis == 0 ? "" : ",")
+                                      << telemetry.position[axis];
+                        }
+                        std::cout << "] duty=[";
+                        for (std::size_t axis = 0; axis < telemetry.duty.size(); ++axis) {
+                            std::cout << (axis == 0 ? "" : ",") << telemetry.duty[axis];
+                        }
+                        std::cout << "] err=0x" << std::hex << telemetry.error_bitmap
+                                  << std::dec << '\n';
+                    }
+                }
             }
 
-            Telemetry telemetry;
-            const ParseError error = parse_telemetry(rx_words, telemetry);
-            ++results[static_cast<std::size_t>(error)];
-            if (error != ParseError::none) {
-                if (!dumped_invalid) {
-                    print_words(rx_words);
-                    dumped_invalid = true;
-                }
-                continue;
+            scheduled_start += period;
+            if (measured && Clock::now() > scheduled_start) {
+                ++deadline_misses;
             }
-
-            if (have_timestamp &&
-                static_cast<std::int32_t>(telemetry.timestamp_us - previous_timestamp) <= 0) {
-                ++timestamp_errors;
-            }
-            previous_timestamp = telemetry.timestamp_us;
-            have_timestamp = true;
-
-            const std::uint32_t measured = frame - 2;
-            if (measured < 5 || measured % 100 == 0) {
-                std::cout << '[' << measured << "] ts_us=" << telemetry.timestamp_us
-                          << " header_word=" << telemetry.header_offset << " pos=[";
-                for (std::size_t axis = 0; axis < telemetry.position.size(); ++axis) {
-                    std::cout << (axis == 0 ? "" : ",") << telemetry.position[axis];
-                }
-                std::cout << "] duty=[";
-                for (std::size_t axis = 0; axis < telemetry.duty.size(); ++axis) {
-                    std::cout << (axis == 0 ? "" : ",") << telemetry.duty[axis];
-                }
-                std::cout << "] err=0x" << std::hex << telemetry.error_bitmap << std::dec
-                          << '\n';
-            }
+            std::this_thread::sleep_until(scheduled_start);
         }
         close(fd);
 
-        const double seconds = std::chrono::duration<double>(
-                                   std::chrono::steady_clock::now() - start)
-                                   .count();
+        const double actual_rate_hz = frame_count > 1
+                                          ? (frame_count - 1) /
+                                                std::chrono::duration<double>(
+                                                    last_start - first_start)
+                                                    .count()
+                                          : 0.0;
         const std::uint32_t valid = results[static_cast<std::size_t>(ParseError::none)];
         std::cout << "Results: valid=" << valid << '/' << frame_count
                   << " no_header=" << results[static_cast<std::size_t>(ParseError::no_header)]
@@ -333,10 +378,21 @@ int main(int argc, char** argv)
                   << " bad_crc=" << results[static_cast<std::size_t>(ParseError::bad_crc)]
                   << " transfer_errors=" << transfer_errors
                   << " timestamp_errors=" << timestamp_errors
-                  << " rate=" << std::fixed << std::setprecision(1)
-                  << frame_count / seconds << " Hz\n";
+                  << " deadline_misses=" << deadline_misses
+                  << " rate=" << std::fixed << std::setprecision(1) << actual_rate_hz
+                  << " Hz max_start_late="
+                  << std::chrono::duration<double, std::micro>(max_start_lateness).count()
+                  << " us transfer_avg="
+                  << std::chrono::duration<double, std::micro>(total_transfer).count() /
+                         frame_count
+                  << " us transfer_max="
+                  << std::chrono::duration<double, std::micro>(max_transfer).count()
+                  << " us\n";
 
-        return valid == frame_count && timestamp_errors == 0 && transfer_errors == 0 ? 0 : 1;
+        return valid == frame_count && timestamp_errors == 0 && transfer_errors == 0 &&
+                       deadline_misses == 0
+                   ? 0
+                   : 1;
     } catch (const std::exception& error) {
         std::cerr << "error: " << error.what() << '\n';
         return 2;

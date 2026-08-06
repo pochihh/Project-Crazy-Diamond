@@ -49,7 +49,8 @@
 static void microsTimer_init(void)
 {
     CPUTimer_stopTimer(CPUTIMER1_BASE);
-    CPUTimer_setPreScaler(CPUTIMER1_BASE, 0U);
+    CPUTimer_setPreScaler(CPUTIMER1_BASE,
+                          (uint16_t)(DEVICE_SYSCLK_FREQ / 1000000U) - 1U);
     CPUTimer_setPeriod(CPUTIMER1_BASE, 0xFFFFFFFFU);
     CPUTimer_reloadTimerCounter(CPUTIMER1_BASE);
     CPUTimer_startTimer(CPUTIMER1_BASE);
@@ -57,8 +58,8 @@ static void microsTimer_init(void)
 
 static uint32_t micros(void)
 {
-    // Timer counts down at 200 MHz
-    return (0xFFFFFFFFU - CPUTimer_getTimerCount(CPUTIMER1_BASE)) / 200U;
+    // Timer counts down directly at 1 MHz and wraps naturally at 2^32 us.
+    return 0xFFFFFFFFU - CPUTimer_getTimerCount(CPUTIMER1_BASE);
 }
 
 //
