@@ -1,12 +1,14 @@
 # Electronics and DSP Pin Assignment
 
-Status: provisional wiring baseline; complete the M0 checks before energized tests.
+Status: locked prototype pin map; complete continuity and rate gates before
+energized multi-axis tests
 
-Last updated: 2026-08-04
+Last updated: 2026-08-05
 
-This is the authoritative first-pass hardware interface for the Raspberry Pi 5,
-TMS320F28379D controlCARD, six MC33926 motor channels, and incremental encoders.
-The software remains configurable for general brushed DC motors and A/B encoders.
+This is the authoritative hardware interface for the Raspberry Pi 5,
+TMS320F28379D controlCARD, six current MC33926 boards, six motor encoders, four
+optional encoder-only sensors, and six homing switches. Literal dock hookups are
+in [wiring_table.md](wiring_table.md).
 
 ## 1. Electrical architecture
 
@@ -14,252 +16,229 @@ The software remains configurable for general brushed DC motors and A/B encoders
 encoder differential A/B(/I)
         │
         ▼
-RS-422 receiver ── 3.3 V logic ──► DSP encoder GPIO
-                                      │
-Pi 5 ◄──────────── SPIA ──────────────┤
-                                      │
-DSP PWM/DIR/DISABLE/ENABLE ──────────► MC33926 ──► motor
-DSP ADC ◄──────── CURRENT/aux analog ─┘
+MC3486 receiver ── 5 V logic ──► tested level shifter ── 3.3 V ──► DSP GPIO
+
+Pi 5 ◄──────────── SPIA, 10 MHz baseline ───────────────────────► DSP
+
+DSP PWM/DIR/STBY/shared EN ──► custom MC33926 boards ──► motors
 ```
 
-The physical E-stop must remove motor energy or bridge enable independently of
-the Pi, ROS 2, and normal DSP software.
+The external E-stop is entirely physical and is neither monitored nor controlled
+by the DSP. It must remove motor energy or gate the bridge independently of the
+Pi, ROS 2, and DSP software.
 
-## 2. Reference axis
+## 2. Reference axis and units
 
-These values are configuration data, not firmware constants.
+The software supports general brushed DC motors and A/B encoders. These Maxon
+parts are the initial configuration, not firmware constants.
 
 | Component | Part | First-pass data |
 |---|---|---|
-| Motor | Maxon 148867, RE 40, graphite brushes, 150 W | 24 V nominal; 6 A nominal/max-continuous; 7,580 rpm no-load; 12,000 rpm mechanical maximum |
-| Gearhead | Maxon 203116, GP 42 C | absolute ratio `91/6`; 8,000 rpm maximum continuous input |
-| Encoder | Maxon 110514, HEDL-5540 | 500 cycles/turn; A/B/index; 5 V DS26LS31 differential line driver |
+| Motor | Maxon 148867 | RE 40, 24 V, 150 W |
+| Gearhead | Maxon 203116 | absolute ratio `91/6` |
+| Encoder | Maxon 110514 / HEDL-5540 | 500 cycles/turn, differential A/B/index |
 
-The motor's 6 A rating exceeds the MC33926's stated 5 A limit, and the actual
-continuous driver current depends on PCB cooling. Treat this combination as
-derated: begin one-axis tests with a 0.5 A bench-supply limit and raise it only
-after current calibration and thermal testing. Full 150 W operation is not a
-first-pass claim.
+The motor's 6 A continuous rating exceeds the MC33926's nominal 5 A rating and
+the current PCB has no current-feedback output. Treat the bridge as derated:
+start one-axis tests with a 0.5 A bench-supply limit and 2% duty.
 
-Derived reference scale:
+| Quantity | Motor axes 0–5 (`×4`) | Auxiliary sensors 0–3 (`×2`) |
+|---|---:|---:|
+| Counts per encoder revolution at 500 CPT | 2,000 | 1,000 |
+| Counts per geared output revolution at ratio `91/6` | 30,333.333... | profile-dependent |
+| Motor event rate at 12,000 rpm | 400,000 interrupts/s per CPU2-decoded motor axis | profile-dependent |
 
-| Quantity | Value |
-|---|---:|
-| Quadrature edges per motor revolution | `500 × 4 = 2,000` counts |
-| Counts per output revolution | `2,000 × 91/6 = 30,333.333...` counts |
-| Counts per output radian | `30,333.333... / 2π = 4,827.699940` counts/rad |
-| Worst-case edge rate at 12,000 motor rpm | `400,000` counts/s per axis |
+Axes 0–2 use hardware eQEP at `×4`. Axes 3–5 interrupt on both A and B edges
+through eCAP1–6 and also produce `×4`. Auxiliary encoders interrupt on both A
+edges and sample B, producing `×2`.
+
+At the gearhead's 8,000 rpm continuous input limit, axes 3–5 can generate about
+800,000 CPU2 interrupts/s in aggregate before auxiliary traffic. At the motor's
+12,000 rpm mechanical limit they can generate 1.2 million/s. CPU2 has no other
+real-time job, but this remains an explicit simultaneous-rate acceptance gate;
+it is not assumed to fit from cycle estimates alone.
 
 The DSP uses only native counts and counts/second. The Pi converts geared-output
-radians and radians/second using the configured encoder scale, ratio, sign, and
+radians and radians/second using configured encoder scale, gear ratio, sign, and
 zero.
 
-## 3. MC33926 board contract
+## 3. Current MC33926 PCB contract
 
-Use these logical board signal names even if the existing PCB silkscreen differs.
+The exact schematic is unavailable, but continuity established:
 
-| Signal | DSP type | MC33926 pin/function | Required behavior |
-|---|---|---|---|
-| `M<n>_PWM` | ePWMxA output | `IN1` | Duty magnitude; 0–20 kHz |
-| `M<n>_DISABLE` | ePWMxB output | `D1` | Active high; trip/disarm must force high or high-impedance |
-| `M<n>_DIR` | GPIO output | `INV` | Direction; change only at zero duty |
-| `MOTOR_EN` | GPIO output | all `EN` | Shared high-awake/low-sleep |
-| `M<n>_FAULT_N` | GPIO input | `SF` | Active-low open-drain; pull up to 3.3 V |
-| `M<n>_CURRENT` | ADC input | `FB` | Calibrated and filtered current feedback |
+- Native `EN` reaches PCB `EN`.
+- Native `D2` reaches PCB `STBY`.
+- Native `D1` is grounded.
+- PCB `PWM` and `DIR` pass through intermediate logic; use them as the board
+  contract without assuming the hidden IN1/IN2 truth table.
+- `SLEW` is pulled to ground through 1 kΩ, so PWM is fixed at 10 kHz.
+- `SF` and `FB` are not exposed on the current PCB.
 
-Fixed wiring assumptions:
+| Board signal | DSP resource | Required behavior |
+|---|---|---|
+| `PWM1`–`PWM6` | ePWM1A–ePWM6A | 10 kHz duty magnitude; zero before direction changes |
+| `DIR1`–`DIR6` | six GPIO outputs | Per-axis direction |
+| `STBY1`–`STBY6` | six GPIO outputs | Low disables/stands by that axis; high permits drive |
+| `MOTOR_EN` | one GPIO output branched to all six `EN` inputs | Low disables all axes; high permits operation |
 
-- `IN2` is tied low and `D2` is tied high.
-- `SLEW` is tied high for 20 kHz PWM. If it is tied low, configure at most
-  10 kHz.
-- Each `D1` has an external pull-up; `EN` has an external pull-down.
-- Each `SF` is pulled up to 3.3 V, not 5 V.
-- `FB` uses `100 Ω < RFB < 300 Ω`; start with 270 Ω and verify that its filtered
-  voltage cannot exceed the DSP ADC range. The bridge datasheet's approximately
-  1 µF filter may be required.
+Boot/disarm/software-E-stop state is PWM = 0, all six `STBY` low, and shared
+`MOTOR_EN` low. Software E-stop is latched and requires explicit clear followed
+by re-arm. Arm raises shared EN only from the safe state, waits the verified
+board wake interval, then permits selected axes with their STBY lines. Direction
+changes occur only at zero duty after at least one PWM period.
 
-Arm sequence: command zero PWM and direction, raise `MOTOR_EN`, wait for the
-bridge to become operational, clear faults only on an explicit command, then
-drive `M<n>_DISABLE` low. Disarm sequence: assert every disable, command zero
-PWM, then lower `MOTOR_EN`. Reverse only at zero duty after at least one PWM
-period.
-
-The MC33926's digital inputs accept 3.3 V DSP logic. The remaining voltage issue
-is the encoder receiver path, not the bridge control path.
+The MC33926 digital inputs accept the DSP's 3.3 V high level; no bridge-control
+level shifter is required for the current board contract.
 
 ## 4. Encoder electrical interface
 
-The HEDL-5540 produces differential RS-422 signals. The present encoder PCB uses
-an MC3486 receiver, whose outputs are 5 V TTL-compatible logic. TTL-compatible
-does not mean 3.3 V-safe: its guaranteed high is only 2.7 V, while its actual
-high may approach its 5 V supply.
+The HEDL-5540 produces differential RS-422 signals. The existing PCB receives
+them with MC3486 devices and exposes 5 V TTL-compatible logic. TTL-compatible
+does not mean 3.3 V-safe: the guaranteed high threshold/level relationship does
+not prevent the actual MC3486 output from approaching its 5 V supply.
 
-F28379D GPIO is not 5 V tolerant. Treat approximately `VDDIO + 0.3 V` (about
-3.6 V) as the recommended input ceiling; the larger absolute-maximum value is
-not an operating target.
+F28379D GPIO is not 5 V tolerant. Do not connect MC3486 outputs directly.
 
-Temporary prototype decision:
+Prototype decision: use the bench-tested MC3486 → TXS0108E → DSP chain, with
+`VCCA = 3.3 V`, `VCCB = 5 V`, common ground, and OE held low until both rails are
+stable. Keep wiring short and do not add strong pull resistors or capacitive
+loads to the signal pins. A 2026-08-05 test produced a clean 3.3 V waveform.
 
-1. Measure MC3486 `VOH` and `VOL` at the actual connector with the expected load,
-   both idle and switching.
-2. Direct connection is permitted only as a documented prototype exception if
-   measured high/low levels satisfy the DSP `VIH`/`VIL` thresholds and the high
-   never exceeds its input limit. It is not a production design because MC3486
-   does not guarantee that ceiling.
-3. A TXS0108E may be tried only if the MC3486 output also satisfies its 5 V-side
-   input thresholds. With `VCCB = 5 V`, TXS0108E requires approximately
-   `VIH >= VCCB - 0.4 V = 4.6 V` and `VIL <= 0.15 V`; MC3486 does not guarantee
-   that high level. Measure waveforms at maximum encoder rate with an
-   oscilloscope before use.
+This remains a prototype exception: at `VCCB = 5 V`, TXS0108E's guaranteed input
+high requirement is higher than MC3486's guaranteed TTL high output. The
+measured combination works but is not guaranteed across all devices and
+temperatures. Scope all 23 connected A/B/index channels at maximum configured
+rates before multi-axis use.
 
-For that prototype, use `VCCA = 3.3 V` toward the DSP, `VCCB = 5 V` toward the
-MC3486, hold `OE` low until both rails are stable, and keep wiring short. Do not
-add strong pull resistors or capacitive filtering to the TXS signal pins.
+A stationary A or B may be high or low; it represents rotor phase. During
+rotation A and B must be equal-frequency square waves in quadrature. One brief
+pulse per revolution is probably index, not A or B.
 
-Do not use a 74HC4051: it is an analog multiplexer, not a logic-level receiver
-or translator.
-
-For the next custom PCB, replace the MC3486/translator chain with 3.3 V
-`AM26LV32E` quad RS-422 receivers connected directly to the DSP. Fit 100–120 Ω
-termination at the receiver, hold `G` high and `/G` low, add 0.1 µF decoupling
-at each IC, and provide a signal reference between boards. Six A/B channels plus
-three index channels require 15 receiver channels (four ICs); index on all six
-requires 18 channels (five ICs).
+For the next PCB, replace the MC3486/translator chain with 3.3 V `AM26LV32E`
+quad RS-422 receivers, 100–120 Ω termination at each receiver, local 0.1 µF
+decoupling, and a signal reference. The present 23 receiver channels require six
+quad devices.
 
 ## 5. DSP pin assignment
 
-`HSEC` is the 180-pin controlCARD connector number. The assignment avoids
-GPIO28/29 (switch/FTDI), GPIO31/34 (LEDs), GPIO42/43/46/47 (USB), and GPIO72/84
-(boot configuration).
+`HSEC` is the dock connector pin. Axes 0–2 are locked because they are already
+wired.
 
-For literal dock-to-device connections, use the consolidated
-[TMDSHSECDOCK point-to-point wiring table](wiring_table.md).
+### 5.1 Motor channels and future current inputs
 
-### 5.1 Motor channels
-
-| Axis | `M<n>_PWM` | `M<n>_DISABLE` | `M<n>_DIR` | `M<n>_CURRENT` |
+| Axis | PWM | STBY | DIR | Future current input |
 |---:|---|---|---|---|
-| 0 | GPIO0 / HSEC49 / ePWM1A | GPIO1 / HSEC51 / ePWM1B | GPIO12 / HSEC58 | ADCA0 / HSEC9 |
-| 1 | GPIO2 / HSEC53 / ePWM2A | GPIO3 / HSEC55 / ePWM2B | GPIO13 / HSEC60 | ADCA1 / HSEC11 |
-| 2 | GPIO4 / HSEC50 / ePWM3A | GPIO5 / HSEC52 / ePWM3B | GPIO14 / HSEC62 | ADCA2 / HSEC15 |
-| 3 | GPIO6 / HSEC54 / ePWM4A | GPIO7 / HSEC56 / ePWM4B | GPIO15 / HSEC64 | ADCA3 / HSEC17 |
-| 4 | GPIO8 / HSEC57 / ePWM5A | GPIO9 / HSEC59 / ePWM5B | GPIO16 / HSEC67 | ADCA4 / HSEC21 |
-| 5 | GPIO10 / HSEC61 / ePWM6A | GPIO11 / HSEC63 / ePWM6B | GPIO17 / HSEC69 | ADCA5 / HSEC23 |
+| 0 | GPIO0 / HSEC49 / ePWM1A | GPIO1 / HSEC51 | GPIO12 / HSEC58 | ADCA0 / HSEC9 |
+| 1 | GPIO2 / HSEC53 / ePWM2A | GPIO3 / HSEC55 | GPIO13 / HSEC60 | ADCA1 / HSEC11 |
+| 2 | GPIO4 / HSEC50 / ePWM3A | GPIO5 / HSEC52 | GPIO14 / HSEC62 | ADCA2 / HSEC15 |
+| 3 | GPIO6 / HSEC54 / ePWM4A | GPIO7 / HSEC56 | GPIO15 / HSEC64 | ADCA3 / HSEC17 |
+| 4 | GPIO8 / HSEC57 / ePWM5A | GPIO9 / HSEC59 | GPIO16 / HSEC67 | ADCA4 / HSEC21 |
+| 5 | GPIO10 / HSEC61 / ePWM6A | GPIO11 / HSEC63 | GPIO17 / HSEC69 | ADCA5 / HSEC23 |
 
-Shared enable: `MOTOR_EN` = GPIO18 / HSEC71.
+Shared `MOTOR_EN` is GPIO18 / HSEC71. ADCA0–5 are reserved for a future PCB and
+remain disabled in the current firmware/configuration.
 
-| Axis | `M<n>_FAULT_N` |
-|---:|---|
-| 0 | GPIO32 / HSEC85 |
-| 1 | GPIO33 / HSEC87 |
-| 2 | GPIO35 / HSEC121 |
-| 3 | GPIO36 / HSEC122 |
-| 4 | GPIO37 / HSEC123 |
-| 5 | GPIO38 / HSEC124 |
+### 5.2 Motor encoders
 
-### 5.2 Primary encoders
+| Axis | A | B | Index | Decoder / owner | Resolution |
+|---:|---|---|---|---|---:|
+| 0 | GPIO20 / HSEC68 | GPIO21 / HSEC70 | GPIO23 / HSEC74 | eQEP1 / CPU1 | `×4` |
+| 1 | GPIO54 / HSEC100 | GPIO55 / HSEC102 | GPIO57 / HSEC106 | eQEP2 / CPU1 | `×4` |
+| 2 | GPIO62 / HSEC127 | GPIO63 / HSEC128 | GPIO65 / HSEC130 | eQEP3 / CPU1 | `×4` |
+| 3 | GPIO24 / HSEC75 / XBAR7 → eCAP1 | GPIO25 / HSEC77 / XBAR8 → eCAP2 | none | CPU2, both A/B edges | `×4` |
+| 4 | GPIO26 / HSEC79 / XBAR9 → eCAP3 | GPIO27 / HSEC81 / XBAR10 → eCAP4 | none | CPU2, both A/B edges | `×4` |
+| 5 | GPIO30 / HSEC80 / XBAR11 → eCAP5 | GPIO39 / HSEC88 / XBAR12 → eCAP6 | none | CPU2, both A/B edges | `×4` |
 
-| Axis | A | B | Index | Decoder |
-|---:|---|---|---|---|
-| 0 | GPIO20 / HSEC68 | GPIO21 / HSEC70 | GPIO23 / HSEC74 | eQEP1 |
-| 1 | GPIO54 / HSEC100 | GPIO55 / HSEC102 | GPIO57 / HSEC106 | eQEP2 |
-| 2 | GPIO62 / HSEC127 | GPIO63 / HSEC128 | GPIO65 / HSEC130 | eQEP3 |
-| 3 | GPIO24 / HSEC75 | GPIO25 / HSEC77 | not assigned | CLB1 candidate |
-| 4 | GPIO26 / HSEC79 | GPIO27 / HSEC81 | not assigned | CLB2 candidate |
-| 5 | GPIO30 / HSEC80 | GPIO39 / HSEC88 | not assigned | CLB3 candidate |
+Index on axes 0–2 is diagnostic only; it does not automatically reset position.
+Homing defines axis zero. Axes 3–5 are A/B-only in this pass.
 
-Axes 3–5 remain conditional on a measured CLB quadrature-decoder prototype at
-400 kcounts/s. If it fails, change the hardware requirement before completing
-the firmware; do not silently replace it with per-edge CPU interrupts.
+### 5.3 Auxiliary encoders
 
-### 5.3 Raspberry Pi SPI
+| Sensor | A | B | Decoder / owner | Resolution |
+|---:|---|---|---|---:|
+| 0 | GPIO64 / HSEC129 / XBAR4 → XINT1 | GPIO66 / HSEC131 | CPU2, both A edges/sample B | `×2` |
+| 1 | GPIO67 / HSEC132 / XBAR5 → XINT2 | GPIO68 / HSEC133 | CPU2, both A edges/sample B | `×2` |
+| 2 | GPIO69 / HSEC134 / XBAR6 → XINT3 | GPIO70 / HSEC137 | CPU2, both A edges/sample B | `×2` |
+| 3 | GPIO71 / HSEC138 / XBAR13 → XINT4 | GPIO73 / HSEC140 | CPU2, both A edges/sample B | `×2` |
+
+CPU2 publishes all seven software-decoded encoder counts and diagnostics to
+CPU1 at 5 kHz through CPU2→CPU1 message RAM. It writes an inactive snapshot
+slot, completes its sequence guard, then switches the active slot. CPU1 validates
+the slot and sequence at the control boundary. IPC flags are for boot,
+configuration, zero/acknowledgement, and liveness—not per encoder edge.
+
+### 5.4 Raspberry Pi SPI
 
 | Signal | Raspberry Pi 5 | DSP |
 |---|---|---|
-| MOSI | BCM10 / physical 19 | GPIO58 / HSEC108 / SPIA SIMO input |
-| MISO | BCM9 / physical 21 | GPIO59 / HSEC110 / SPIA SOMI output |
-| SCLK | BCM11 / physical 23 | GPIO60 / HSEC125 / SPIA CLK input |
-| CE0 | BCM8 / physical 24 | GPIO61 / HSEC126 / SPIA STE input **and** GPIO40 / HSEC89 frame-boundary input |
-| GND | physical 6 or another ground | common ground |
+| MOSI | BCM10 / physical 19 | GPIO58 / HSEC108 / SPIA SIMO |
+| MISO | BCM9 / physical 21 | GPIO59 / HSEC110 / SPIA SOMI |
+| SCLK | BCM11 / physical 23 | GPIO60 / HSEC125 / SPIA CLK |
+| CE0 | BCM8 / physical 24 | GPIO61 / HSEC126 / SPIA STE and GPIO40 / HSEC89 / XBAR14 → XINT5 |
+| GND | physical 6 or another ground | common logic ground |
 
-The CE0 mirror uses Input-XBAR14 and XINT5 on both edges. Existing firmware
-still using GPIO123/XINT1 must be migrated before protocol validation.
+### 5.5 Homing switches
 
-### 5.4 Limit switches and reserved slow encoders
+| Axis | Signal | GPIO / dock | Handling |
+|---:|---|---|---|
+| 0 | `HOME0_N` | GPIO74 / HSEC141 | CPU1 5 kHz polling, internal pull-up |
+| 1 | `HOME1_N` | GPIO75 / HSEC142 | CPU1 5 kHz polling, internal pull-up |
+| 2 | `HOME2_N` | GPIO76 / HSEC143 | CPU1 5 kHz polling, internal pull-up |
+| 3 | `HOME3_N` | GPIO77 / HSEC144 | CPU1 5 kHz polling, internal pull-up |
+| 4 | `HOME4_N` | GPIO78 / HSEC145 | CPU1 5 kHz polling, internal pull-up |
+| 5 | `HOME5_N` | GPIO79 / HSEC146 | CPU1 5 kHz polling, internal pull-up |
 
-The slow encoders are reserved but deferred. The limit bank is sampled in the
-first pass without per-edge interrupts.
+Wire each normally-open switch from its GPIO directly to logic ground. Open is
+high and reached/closed is low. There is no shared `LIMIT_ANY`, no limit ISR,
+and no additional limit function in this pass. GPIO80–82 remain spares.
 
-| Function | A/input | B |
-|---|---|---|
-| Slow encoder 0 | GPIO64 / HSEC129 | GPIO66 / HSEC131 |
-| Slow encoder 1 | GPIO67 / HSEC132 | GPIO68 / HSEC133 |
-| Slow encoder 2 | GPIO69 / HSEC134 | GPIO70 / HSEC137 |
-| Slow encoder 3 | GPIO71 / HSEC138 | GPIO73 / HSEC140 |
-| `LIMIT0_N`–`LIMIT7_N` | GPIO74–GPIO81 / HSEC141–HSEC148 | — |
+Homing runs one axis at a time: move away if initially active, seek, back off
+until released, reapproach slowly, then latch the raw count/offset. Timeout,
+maximum travel, command watchdog, or software E-stop aborts and disarms.
 
-Use 3.3 V pull-ups and active-low switch inputs. Read all eight as one GPIO bank
-snapshot in the 1 kHz loop; they do not consume eight CPU interrupts. Their
-axis/direction mapping and whether an active switch causes per-axis inhibit or a
-global disarm must be fixed in the machine profile before use. An active input
-always inhibits arming until that policy is defined. GPIO65 remains eQEP3 index
-and GPIO72 remains a boot pin.
+### 5.6 Reserved auxiliary analog inputs
 
-External stop status: `ESTOP_OK` = GPIO82 / HSEC149, 3.3 V input, sampled at
-1 kHz. This is status feedback only. The physical E-stop circuit must directly
-gate the bridge enable/energy path without depending on this GPIO or software.
-
-### 5.5 Auxiliary analog inputs
-
-| Channel | Pin | First-pass use |
+| Channel | Pin | First-pass state |
 |---:|---|---|
-| 0 | ADCB0 / HSEC12 | cyclic telemetry candidate |
-| 1 | ADCB1 / HSEC14 | cyclic telemetry candidate |
-| 2 | ADCB2 / HSEC18 | cyclic telemetry candidate |
-| 3 | ADCB3 / HSEC20 | cyclic telemetry candidate |
-| 4 | ADCB4 / HSEC24 | reserved |
-| 5 | ADCB5 / HSEC26 | reserved |
-| 6 | ADCC2 / HSEC31 | reserved |
-| 7 | ADCC3 / HSEC33 | reserved |
+| 0 | ADCB0 / HSEC12 | reserved, disabled |
+| 1 | ADCB1 / HSEC14 | reserved, disabled |
+| 2 | ADCB2 / HSEC18 | reserved, disabled |
+| 3 | ADCB3 / HSEC20 | reserved, disabled |
+| 4 | ADCB4 / HSEC24 | reserved, disabled |
+| 5 | ADCB5 / HSEC26 | reserved, disabled |
+| 6 | ADCC2 / HSEC31 | reserved, disabled |
+| 7 | ADCC3 / HSEC33 | reserved, disabled |
 
-The SPI telemetry frame carries four auxiliary samples. Freeze which four after
-the analog continuity check.
+The protocol reserves telemetry space, but disabled channels report invalid/zero
+and no ADC converter/SOC is enabled for them.
 
-## 6. Resource budget
+## 6. Peripheral and GPIO budget
 
-| Resource | Required | Result |
-|---|---:|---|
-| Digital GPIO | 62 including E-stop status, limits, and reserved slow encoders | Fits provisional map |
-| ADC channels | 6 current + 8 auxiliary | Fits 14 HSEC analog inputs |
-| ePWM modules | ePWM1–6 A/B | Fits |
-| eQEP modules | 3 | All used |
-| CLB tiles | 3 candidates for axes 3–5 | One tile remains; performance must be proven |
-| Input X-BAR | 1–6 for CLB encoder edges; 14 for SPI boundary | Fits, but no six independent fault trips remain |
-| CPU external interrupts | XINT5 for SPI; XINT4 free | Limits use polling, not eight interrupts |
+| Resource | Use | Remaining / gate |
+|---|---|---|
+| eQEP | eQEP1–3 for axes 0–2 | all used |
+| eCAP | eCAP1–6 for both edges of axes 3–5 | all used |
+| External interrupts | XINT1–4 auxiliary encoders; XINT5 SPI CE mirror | all five used |
+| Input X-BAR | 4–6 auxiliary; 7–12 motor encoders; 13 auxiliary; 14 CE mirror | inputs 1–3 free |
+| CPU2 interrupt sources | eCAP1–6 plus XINT1–4 | rate test required |
+| ePWM | ePWM1A–6A motor PWM | B outputs unused as PWM |
+| Digital GPIO | 53 connected signals | GPIO32, 33, 35–38, 80–82 reserved/spare |
+| ADC | ADCA0–5 plus ADCB0–5/ADCC2–3 reserved | all disabled in current hardware profile |
+| CLB | none | four tiles available only as a measured fallback |
 
-The 62 digital signals are 25 motor-control/fault signals, 15 primary-encoder
-signals, 5 SPI/frame-boundary signals, 8 reserved slow-encoder signals, 8 limit
-inputs, and 1 E-stop status input.
+## 7. Hardware gates
 
-The provisional encoder allocation cannot also route all six `SF` signals to
-independent ePWM trip inputs. The baseline therefore uses MC33926 internal
-protection, 1 kHz DSP fault observation, and the independent external stop/enable
-path. If asynchronous per-axis `SF` shutdown is mandatory, add external fault
-aggregation/counter hardware or reduce encoder requirements.
-
-## 7. M0 hardware gates
-
-- [ ] Trace every custom-PCB signal to the MC33926 or encoder connector.
-- [ ] Confirm `D1`, `EN`, `SF`, `SLEW`, `IN2`, and `D2` passive states.
-- [ ] Measure MC3486 output levels and maximum-rate A/B waveforms; select and
-      document the temporary receiver/translation path.
-- [ ] Verify every selected HSEC pin against the exact controlCARD revision and
-      C2000 pin-mux tables.
-- [ ] Prove one CLB quadrature decoder at 400 kcounts/s with direction changes.
-- [ ] Define and bench-test the independent E-stop/enable circuit.
-- [ ] Define each limit input's axis, direction, polarity, and stop/recovery action.
-- [ ] Verify all current/aux ADC voltages remain within the DSP ADC range.
-- [ ] Start energized testing on one axis at 2% duty and a 0.5 A supply limit.
+- [ ] Trace each custom-PCB `PWM`, `DIR`, `STBY`, and `EN` connector position.
+- [x] Confirm PCB EN → native EN, PCB STBY → native D2, and native D1 grounded.
+- [x] Confirm SLEW is pulled to ground by 1 kΩ and lock PWM to 10 kHz.
+- [x] Verify one MC3486/TXS0108E channel produces a clean 3.3 V waveform.
+- [ ] Scope all 23 translated encoder channels over the required rates.
+- [ ] Verify every selected HSEC pin against continuity and the controlCARD revision.
+- [ ] Prove eCAP1–6 `×4` plus XINT1–4 `×2` simultaneously with zero lost events
+      and measured CPU2 headroom.
+- [ ] Verify each home input is high open/low pressed with the internal pull-up.
+- [ ] Bench-test the independent physical E-stop circuit.
+- [ ] Start energized testing on one axis at 2% duty and 0.5 A supply limit.
 
 No six-axis power test starts until these gates pass.
 
@@ -273,7 +252,3 @@ No six-axis power test starts until these gates pass.
 - [MC3486 datasheet](../doc/mc3486.pdf)
 - [TXS0108E datasheet](../doc/txs0108e.pdf)
 - [HEDL-5540 family datasheet](<../doc/HEDL-5zzz, 9zzz Series.pdf>)
-- [AM26LV32E datasheet](https://www.ti.com/lit/ds/symlink/am26lv32e.pdf)
-- [Maxon 148867 motor data](https://www.maxongroup.com/medias/sys_master/root/9398013394974/Cataloge-Page-EN-163.pdf),
-  [Maxon 203116 gearhead data](https://www.maxongroup.com/medias/sys_master/root/8831071158302/2018EN-354.pdf),
-  and [Maxon 110514 encoder data](https://www.maxongroup.com/maxon/view/product/110514)

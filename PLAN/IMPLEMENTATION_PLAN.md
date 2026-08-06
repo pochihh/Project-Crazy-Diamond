@@ -1,10 +1,10 @@
 # Project Crazy Diamond — Implementation Plan
 
-Status: ready for M0 validation; energized hardware work is blocked until the
-pin, encoder-receiver, CLB-decoder, and independent-stop gates in
+Status: ready for M0 validation; energized multi-axis work is blocked until the
+pin, all-channel level-shifter, CPU2 encoder-rate, and independent-stop gates in
 [`electronics.md`](electronics.md) pass.
 
-Last updated: 2026-08-04
+Last updated: 2026-08-05
 
 This is the execution plan for the project described in [`plan.md`](plan.md). The
 original file remains the project brief. This file records the decisions, interfaces,
@@ -23,17 +23,20 @@ The first pass will deliver:
 
 - One Raspberry Pi 5 running a PREEMPT_RT Linux kernel and ROS 2 Jazzy.
 - One physical TMS320F28379D DSP connected over 10 MHz SPI.
-- Six brushed DC motor axes using a small `PWM/DIR/ENABLE/FAULT/CURRENT`
-  driver interface. The reference hardware uses MC33926 H-bridges, but the
+- Six brushed DC motor axes using the current PCB's `PWM/DIR/STBY` per-axis
+  signals and one shared `EN`. The reference hardware uses MC33926 H-bridges, but the
   control and host configuration must not hardcode one motor model.
 - Six A/B incremental encoders, with optional index. The reference sensor is
   Maxon 110514 (HEDL-5540, 500 cycles/turn, RS-422 line driver) on a Maxon
   148867 motor and Maxon 203116 gearhead with absolute ratio `91/6`.
+- Four additional configurable A/B encoder-only sensors, decoded by CPU2 and
+  reported without motor command interfaces.
 - Per-axis `POSITION`, `VELOCITY`, and normalized `DUTY` control modes.
 - Runtime configuration of encoder scale, gearbox ratio, axis direction, limits,
-  and CLA controller gains from both a versioned config file and the web UI.
-- A C++ real-time ROS 2 hardware/control path running at a 1 kHz target rate on
-  isolated CPU 3.
+  and bounded CLA transfer-function coefficients from both a versioned config
+  file and the web UI.
+- A 5 kHz DSP snapshot/control loop plus a C++ ROS 2/SPI path running at a 1 kHz
+  target rate on isolated CPU 3.
 - A LAN-only web UI with login, DSP status, configuration, commands, 50 Hz plots,
   and explicit recording controls.
 - On-demand recordings shorter than one minute, written locally by a non-real-time
@@ -52,15 +55,22 @@ LQR implementation.
 | DSP motion units | Native encoder counts and counts/second; no gear or SI conversion |
 | Public ROS/UI units | Configurable geared-output units; radians and radians/second by default |
 | Direct motor command | `DUTY`, normalized to `[-1.0, +1.0]`; it is not called torque or effort |
-| Inner controllers | Independent position PID and velocity PID on the CLA; duty bypasses PID |
+| DSP inner rate | Encoder/home-input snapshot and all six CLA controllers at 5 kHz |
+| SPI stream rate | 1 kHz baseline; the Pi master may later request 5 kHz for one DSP after timing validation |
+| Encoder decoders | Axes 0–2 use eQEP at `×4`; axes 3–5 use both A/B edges on CPU2 eCAP1–6 at `×4`; four auxiliary sensors use CPU2 XINT1–4 at `×2` |
+| Inner controllers | Independent position and velocity discrete transfer functions on CLA1; duty bypasses the controller |
 | High-level control | C++ on the Pi real-time loop; LQR stays on the Pi initially |
 | ROS integration | `ros2_control` hardware component and controller manager |
-| UI data rate | Approximately 50 Hz, decoupled from the 1 kHz control loop |
+| UI data rate | Approximately 50 Hz, decoupled from the 1 kHz SPI stream and 5 kHz DSP loop |
 | Configuration source | Versioned YAML on the Pi; host owns encoder/gear conversion and sends raw limits/setpoints to DSP |
 | Physical DSP count | One now; configured endpoint registry and mock multi-DSP tests now |
-| Recording | Explicit UI start/stop; binary full-rate data written outside the RT thread |
+| Recording | Explicit UI start/stop; binary full-SPI-rate data written outside the RT thread |
 | Network scope | Same trusted Wi-Fi/LAN only; no cloud service or internet discovery |
 | ROS distribution | Jazzy, matching Ubuntu 24.04 and the Project NUEVO baseline |
+| DSP project form | Two independent CCS executables, CPU1 and CPU2; RAM-only during initial iteration |
+| Motor board | Shared EN, six separate STBY, 10 kHz PWM; no exposed SF/current feedback |
+| Homing | Six active-low GPIO switches with internal pull-ups, polled by CPU1 at 5 kHz |
+| External E-stop | Purely physical; no DSP status or control wire |
 
 ## 3. Electronics and DSP pin assignment
 
@@ -68,14 +78,16 @@ The authoritative wiring, voltage-interface decisions, pin tables, peripheral
 budget, and M0 hardware gates are in
 [electronics.md](electronics.md).
 
-The project remains blocked from energized six-axis testing until the receiver
-voltage, exact controlCARD pins, CLB encoder path, current-feedback range, and
-independent stop/enable circuit pass those documented gates.
+One translated encoder channel now has a clean measured 3.3 V waveform. The
+project remains blocked from energized multi-axis testing until all translated
+channels, exact controlCARD pins, CPU2 aggregate encoder rate, homing inputs,
+and the independent stop/enable circuit pass
+the documented gates.
 
 ## 4. Derived interface budgets
 
 Reference encoder scale and PWM limits are maintained with the hardware
-interface in [electronics.md](electronics.md). The 1 kHz/10 MHz
+interface in [electronics.md](electronics.md). The 5 kHz control and 1 kHz/10 MHz
 transaction timing is maintained in
 [spi_protocol.md](spi_protocol.md). Recording rates and ownership are
 maintained in [ros2_interfaces.md](ros2_interfaces.md).
@@ -88,19 +100,19 @@ Browser
   ▼
 Python UI backend ───── ROS services/topics ─────┐
   │                                              │ CPUs 0–2, non-real-time
-  ├── configuration persistence                 │
-  ├── session/download management               │
-  └── authentication                            │
+  ├── configuration persistence                  │
+  ├── session/download management                │
+  └── authentication                             │
                                                  ▼
                                    controller_manager / registry
                                                  │ validated RT handoff
 CPU 3, isolated                                  ▼
   C++ ros2_control update loop: controller → read/write → fixed ring
-                                                 │ SPI ioctl, 1 kHz
+                                                 │ SPI ioctl, 1 kHz baseline
                                                  ▼
                                       F28379D CPU1 + CLA1
-                                                 │
-                        encoders/ADC → controllers → MC33926 outputs
+                                                 │ 5 kHz snapshot/control
+                              encoders → controllers → MC33926 outputs
 ```
 
 ROS services, DDS serialization, logging, configuration file writes, WebSockets,
@@ -110,19 +122,21 @@ and disk I/O must never execute in the CPU 3 real-time loop.
 
 ### 6.1 Timing model
 
-Target timing when the board uses fast slew:
+Target timing for the current board:
 
 | Function | Rate | Trigger/owner |
 |---|---:|---|
-| MC33926 PWM | 20 kHz | ePWM hardware |
-| Encoder/ADC snapshot | 1 kHz | CPU1 control ISR |
-| CLA control calculation | 1 kHz | CPU1-triggered CLA task |
+| MC33926 PWM | 10 kHz | ePWM hardware; SLEW is pulled low through 1 kΩ |
+| Encoder snapshot and home-input poll | 5 kHz | ePWM-synchronized CPU1 control ISR |
+| CLA control calculation | 5 kHz | CPU1-triggered CLA task |
 | SPI command/telemetry | 1 kHz | Pi transaction + DSP DMA |
 | Diagnostics counters | 1–10 Hz | CPU1 background |
 
-The CPU1 control ISR will snapshot encoder and ADC values, write one coherent
-CPU-to-CLA message, and trigger the CLA. The CLA end-of-task path will apply the
-motor output and publish one coherent telemetry snapshot. The uncontrolled
+The CPU1 control ISR will snapshot encoder values and the six home inputs at a fixed PWM phase,
+write one coherent CPU-to-CLA message, and trigger the CLA. The CLA end-of-task
+path will apply motor outputs every 200 µs. Every fifth result becomes the
+baseline 1 kHz SPI telemetry snapshot; a later validated 5 kHz stream can publish
+every result without changing the wire frame. The uncontrolled
 “main loop runs as fast as possible” behavior in the current integration code is
 not the final scheduling model.
 
@@ -133,28 +147,31 @@ not the final scheduling model.
 - Boot, board initialization, and safety state machine.
 - SPIA slave DMA and frame validation.
 - eQEP1/2/3 snapshots.
-- ADC sampling and calibrated conversion.
-- eQEP and CLB encoder snapshot validation.
+- Six active-low homing inputs polled with internal pull-ups.
+- Coherent eQEP and CPU2 encoder snapshot validation.
 - Coherent CLA input/output handoff.
-- Fault handling, selected stop-path control, command watchdog, and telemetry assembly.
+- Software E-stop/disarm handling, command watchdog, and telemetry assembly.
 
-**CPU2** remains unused in the first pass. It may later sample the reserved slow
-encoders with one periodic GPIO-bank read, but that implementation is deferred.
+**CPU2**
 
-**CLB1–3**
+- Own eCAP1–6 and XINT1–4 encoder interrupts.
+- Decode both A and B edges for axes 3–5, producing signed `×4` counts; decode
+  both A edges/sample B for four auxiliary sensors, producing signed `×2` counts.
+- Publish aligned counts, rates, event/overrun counters, and a sequence number to
+  CPU1 through fixed shared memory; perform no control or motor output.
+- Enforce a configured aggregate event-rate ceiling established by M0 HIL tests.
 
-- Decode axes 3–5 in hardware after the CLB proof in
-  [`electronics.md`](electronics.md) passes.
-- Expose coherent counts and invalid-transition/wrap diagnostics to CPU1.
-- Generate no per-edge CPU interrupt.
+**CLB1–4** remain unused in the baseline. They are the first on-chip fallback if
+the CPU2 interrupt-rate gate fails, but no CLB firmware is built speculatively.
 
 **CLA1**
 
 - Run all six axis controllers from one coherent input snapshot.
-- Support per-axis disabled, position PID, velocity PID, and duty bypass.
+- Support per-axis disabled, position transfer function, velocity transfer
+  function, and duty bypass.
 - Clamp every output to the configured duty limit.
 - Reset controller state on arm, disarm, fault, and mode changes.
-- Atomically replace a complete controller parameter block between tasks.
+- Atomically replace complete controller coefficient/state blocks between tasks.
 
 **CLA2** remains unused.
 
@@ -165,9 +182,9 @@ Each axis has exactly one active mode:
 | Mode | Setpoint | CLA behavior |
 |---|---|---|
 | `DISABLED` | ignored | output disabled/zero according to board stop policy |
-| `POSITION` | native int32 encoder count | position PID produces normalized duty |
-| `VELOCITY` | native encoder counts/second | filtered velocity PID produces normalized duty |
-| `DUTY` | `[-1, +1]` | bypass PID and clamp to configured duty limit |
+| `POSITION` | native int32 encoder count | position-error transfer function produces normalized duty |
+| `VELOCITY` | native encoder counts/second | filtered velocity-error transfer function produces normalized duty |
+| `DUTY` | `[-1, +1]` | bypass the controller and clamp to configured duty limit |
 
 Velocity is derived from encoder-position differences at the CLA/control rate
 and passed through one configurable first-order low-pass filter. A true torque
@@ -176,22 +193,39 @@ mode is deferred until `FB` is calibrated and a current controller is designed.
 On entry to position mode, the internal reference starts at the current measured
 position. Motion begins only after a fresh `CONTROL` command.
 
-### 6.4 Controller parameters
+### 6.4 General discrete-time controllers
 
-Store separate parameter blocks per axis for position and velocity. Their units
-are deliberately raw: position gains operate on counts and velocity gains operate
-on counts/second.
+Store separate SISO transfer functions per axis for position and velocity. At
+the fixed sample period `Ts = 200 µs`, each controller evaluates:
 
-- `kp`, `ki`, and `kd`.
-- Normalized output limit.
-- Velocity filter cutoff for the velocity estimator.
-- Parameter revision and validity flag.
+```text
+u[k] = Σ(B[i] e[k-i], i=0..NB) - Σ(A[i] u[k-i], i=1..NA)
+```
 
-The UI stages edits and applies the complete block explicitly. The host converts
-any output-unit limits to raw DSP limits before transmission. The DSP validates
-finite values and ranges, swaps the block on a control boundary, acknowledges the
-revision, and optionally resets controller state. Raw axis limits and motor
-polarity may change only while disarmed.
+`A[0]` is normalized to `1.0`. `NA = NB = 16`, so each fixed array contains 17
+IEEE-754 `float32` coefficients; the host zero-pads shorter configured arrays.
+CLA1 uses a Direct Form II Transposed realization with bounded preallocated
+state. Position error is in counts, velocity error is in counts/second, and
+output is normalized duty.
+
+The DSP validates finite coefficients, order, `A[0]`, sample rate, and revision;
+stages complete A and B arrays while disarmed; then atomically swaps them at a
+control boundary on configuration commit. State resets on arm, disarm, fault,
+mode change, coefficient change, or explicit reset. The safety duty clamp is
+outside the general controller. Generic anti-windup is not inferred from A/B
+coefficients and must be designed explicitly if a controller requires it.
+
+At 200 MHz, each 5 kHz tick provides 40,000 CLA cycles. Six simultaneously
+active order-16 controllers require at most 198 coefficient multiply terms per
+tick (`6 × (17 B + 16 A)`), leaving ample compute headroom for state updates and
+clamps. Store only the active coefficient sets in CLA data RAM; configuration
+staging remains CPU-owned because commits are disarmed. One 16-float working
+state per axis is shared between position and velocity because mode changes
+reset it. Active coefficients plus working state consume about 2,016 bytes
+before message/metadata storage. M2 must still audit the linker map, move
+unrelated `.bss`/`.data` out of CLA data RAM, and measure the real deadline with
+a GPIO timing pulse and the deadline counter; the estimate is not acceptance
+evidence.
 
 ### 6.5 Safety state machine
 
@@ -206,15 +240,15 @@ BOOT → DISARMED → ARMED
 Rules:
 
 - Boot always ends in `DISARMED`; outputs never retain a prior enabled state.
-- `ARM` is accepted only with valid configuration, no active hardware fault,
-  healthy CLB/CLA state, and recent valid SPI traffic.
+- `ARM` is accepted only with valid configuration, no latched software fault,
+  healthy CPU2 encoder/CLA state, and recent valid SPI traffic.
 - `DISARM` immediately forces the board-defined safe output state.
 - A command timeout defaults to 50 ms, disables outputs, latches a communication
   fault, and requires `CLEAR_FAULT` followed by `ARM`.
 - CRC/version/target-ID failures never refresh the watchdog.
 - Stale or duplicate control sequences do not change outputs.
-- `SF`, overcurrent, invalid encoder data, CLA failure, or CLB decoder failure
-  cause a latched fault.
+- Software E-stop, invalid encoder data, CLA failure, or CPU2 decoder overrun
+  causes a latched fault.
 - Clearing a fault never arms the system.
 - Software limits supplement physical limits; they do not replace them.
 
@@ -240,7 +274,8 @@ schema_version: 1
 config_revision: 1
 
 control:
-  update_rate_hz: 1000
+  dsp_control_rate_hz: 5000
+  spi_stream_rate_hz: 1000
   command_timeout_ms: 50
 
 dsps:
@@ -268,14 +303,30 @@ dsps:
         position_max_rad: null
         velocity_limit_rad_s: null
         duty_limit: 0.02
-        current_limit_a: null
-        position_pid: {kp: 0.0, ki: 0.0, kd: 0.0, output_limit: 0.02}
-        velocity_pid: {kp: 0.0, ki: 0.0, kd: 0.0, output_limit: 0.02}
+        current_feedback_present: false
+        position_controller:
+          denominator_a: [1.0]
+          numerator_b: [0.0]
+        velocity_controller:
+          denominator_a: [1.0]
+          numerator_b: [0.0]
         velocity_filter_hz: 20.0
+    auxiliary_encoders:
+      - sensor: 0
+        name: dsp0_aux_encoder0
+        enabled: false
+        encoder_cycles_per_rev: 500
+        quadrature_multiplier: 2
+        direction: 1
+        zero_offset_counts: 0
+        max_event_rate_hz: null
+        public_unit: radians
 ```
 
-All six axes are explicit; implicit cloned defaults are avoided for safety.
-Unknown machine travel/current limits remain `null`, prevent arming, and must not
+All six axes and four auxiliary encoders are explicit; implicit cloned defaults
+are avoided for safety. An auxiliary decoder remains disabled until its scale,
+direction, and maximum event rate are configured.
+Unknown machine travel limits remain `null`, prevent arming, and must not
 silently receive permissive defaults. The initial `0.02` duty limit corresponds
 to approximately 0.48 V average at a 24 V bus; the current-limited bench supply
 remains the primary protection during first motion.
@@ -285,7 +336,8 @@ Configuration flow:
 1. The non-RT config service loads and validates YAML.
 2. On startup, it probes the configured DSP endpoint while disarmed.
 3. It computes output-unit conversion locally, stages motor polarity, raw limits,
-   and raw-unit controller parameter blocks, then commits the complete revision.
+   raw-unit controller coefficient arrays, and auxiliary decoder configuration,
+   then commits the complete revision.
 4. The DSP acknowledges and reports the same active configuration revision.
 5. Only then may the hardware component become armable.
 6. UI edits use the same validator and service.
@@ -305,8 +357,9 @@ service inventory, multi-DSP behavior, real-time boundary, recording path, web
 UI contract, and package layout are in
 [ros2_interfaces.md](ros2_interfaces.md).
 
-The execution constraints remain: one physical DSP and 1 kHz SPI in the first
-pass; multiple configured/mock DSPs tested immediately; approximately 50 Hz UI
+The execution constraints remain: one physical DSP with 5 kHz local control and
+1 kHz SPI streaming in the first pass; multiple configured/mock DSPs tested
+immediately; approximately 50 Hz UI
 updates; recordings only on explicit request and under one minute; LAN-only
 access.
 
@@ -318,18 +371,19 @@ Milestones are gated by evidence, not by code being present.
 
 Deliverables:
 
-- Target top-level layout created and `DSP_28379D` moved to `dsp/f28379d`
-  without prefixed package/folder names.
+- Target top-level layout created and `DSP_28379D` reorganized under
+  `dsp/f28379d/{cpu1,cpu2,shared}` without prefixed package/folder names.
 - Maxon 148867/203116/110514 reference profile recorded in `system.yaml`.
 - The pin allocation in `PLAN/electronics.md` checked against the controlCARD and actual MC33926
-  wiring boards, including all eight limits and reserved slow encoders.
+  wiring boards, including all six home switches and four auxiliary encoders. The
+  already-wired eQEP1–3 dock pins remain unchanged.
 - Point-to-point wiring and GPIO ownership table for the controlCARD/dock,
   H-bridge PCB, encoder receivers, Pi SPI, E-stop, and power supply.
-- A 3.3 V-output RS-422 receiver path for every connected HEDL channel; no 5 V
-  encoder output reaches a DSP GPIO.
-- CLB1–3 quadrature proof at the simultaneous worst-case rate defined in
-  `PLAN/electronics.md`,
-  or a documented external-counter/reduced-encoder replacement architecture.
+- The tested MC3486/TXS0108E path replicated and scoped for all 23 connected
+  encoder channels; no 5 V encoder output reaches a DSP GPIO.
+- All seven CPU2 eCAP/XINT decoders proven simultaneously at the aggregate
+  worst-case rate defined in `PLAN/electronics.md`, or a documented
+  CLB/external-counter/reduced-rate replacement architecture.
 - Current-limited, one-motor bench procedure beginning at 0.5 A and 2% duty.
 - Logic-analyzer capture plan for PWM, chip select, and SPI mode.
 
@@ -337,9 +391,10 @@ Exit criteria:
 
 - No GPIO conflict remains.
 - No unresolved 5 V/3.3 V interface remains.
-- All six encoder decoders have a measured, full-rate implementation path; CPU
-  per-edge GPIO interrupts are not used as a substitute.
-- PWM/slew, fault-observation, and disable behavior match the MC33926 contract
+- All six motor encoders and four auxiliary sensors have a measured
+  implementation path. The seven CPU2 edge-interrupt decoders have zero lost
+  events and documented CPU2 headroom at the accepted aggregate rate.
+- PWM/slew, shared-EN, and per-axis-STBY behavior match the MC33926 contract
   in `PLAN/electronics.md`.
 - Machine travel limits and the physical E-stop behavior are documented.
 - The bench can remove motor energy independently of software.
@@ -366,17 +421,18 @@ Exit criteria:
 Deliverables:
 
 - PWM corrected for MC33926 slew mode.
-- The M0-selected independent stop/fault path implemented; ePWM trip zones are
-  enabled only if that selected wiring routes a trip input.
+- Shared EN and all six STBY outputs implement the locked safe state; the
+  independent physical E-stop remains outside DSP control.
+- Six homing inputs and the agreed one-axis-at-a-time homing sequence.
 - Explicit safety state machine and watchdog.
-- Coherent CPU1 → CLA → motor timing path at the selected rate.
-- Position, velocity, and duty modes with atomic parameter changes.
+- Coherent CPU1 → CLA → motor timing path at 5 kHz.
+- Position, velocity, and duty modes with atomic coefficient changes.
 - Fault/config/state telemetry.
 
 Exit criteria:
 
 - Boot, malformed traffic, and stale traffic cannot energize a motor output.
-- Disarm, timeout, and `SF` fault force the documented safe state.
+- Disarm, timeout, and software E-stop force the documented safe state.
 - Mode changes cannot produce a stale-reference jump.
 - CLA/control deadline counter remains zero in a 10-minute no-motor test.
 
@@ -385,21 +441,23 @@ Exit criteria:
 Deliverables:
 
 - eQEP1/2/3 wiring and scaling verified.
-- CLB1/2/3 decoders implemented for axes 3–5 with transition diagnostics.
+- CPU2 eCAP1–6/XINT1–4 decoders implemented for axes 3–5 and four auxiliary
+  sensors with event/overrun diagnostics and coherent CPU1 handoff.
 - Encoder sign, index, zero offset, and velocity filtering verified.
 - One MC33926 axis tested at 0.5 A/2% duty before either limit is increased or
   the wiring is replicated.
-- Current-feedback calibration recorded if `FB` is connected.
 
 Exit criteria:
 
-- Six output revolutions produce 182,000 quadrature edges with the expected sign
-  on every axis configuration.
-- CLB decoders report no missed/invalid edges at the motor's measured worst-case
-  speed; otherwise the M0 replacement architecture is used.
+- Six output revolutions produce 182,000 counts on each of the six `×4` motor
+  encoder paths, with the expected sign.
+- CPU2 decoders report no missed/overrun events at the accepted simultaneous
+  motor and auxiliary rates; otherwise the M0 replacement architecture is used.
+- Each enabled auxiliary sensor reports the expected raw and public-unit motion
+  without exposing a motor command interface.
 - Host output-unit commands convert to the expected raw count/count-rate values,
   and each raw DSP mode works on one unloaded motor within configured limits.
-- Direction reversal, limit violation, E-stop, disconnect, and driver fault all
+- Direction reversal, limit violation, E-stop, and disconnect all
   produce the documented safe behavior.
 
 ### M4 — Build the Pi real-time ROS 2 path
@@ -415,8 +473,9 @@ Exit criteria:
 
 - Fresh laptop and Pi build instructions work without developer-local paths.
 - Mock mode runs without DSP hardware.
-- Physical mode sustains the selected rate for 10 minutes with zero CRC errors,
-  zero stale command application, and no RT deadline misses.
+- Physical mode sustains 5 kHz DSP control and 1 kHz SPI streaming for 10 minutes
+  with zero CRC errors, zero stale command application, and no RT deadline
+  misses.
 - Jitter and transaction-duration distributions are saved with the test report.
 
 ### M5 — Prove multi-DSP behavior with mocks
@@ -466,11 +525,11 @@ Exit criteria:
 - Browser refresh/disconnect does not affect DSP safety behavior.
 - No default account or ephemeral authentication secret remains.
 
-### M8 — Integrated release candidate
+### M8 — Integrated RAM release candidate
 
 Deliverables:
 
-- Flash and RAM DSP build instructions and verified images.
+- CPU1 and CPU2 RAM build instructions and verified paired images.
 - Pi deployment, boot, recovery, wiring, calibration, and experiment procedures.
 - One-command mock test suite and documented HIL test sequence.
 - Known-limitations and test-results report.
@@ -484,11 +543,11 @@ Exit criteria:
 | Layer | Required checks |
 |---|---|
 | Protocol unit | Golden frames, endian/float packing, CRC, sequence wrap, all invalid inputs |
-| DSP controller | PID math, saturation, state reset, mode switch, duty clamp, velocity filter |
-| DSP safety | Boot state, arm rules, disarm, timeout, CRC storm, SF/stop path, CLB/CLA failure |
-| SPI HIL | 1/5/10 MHz ramp, agreed mode, 1 kHz target, long run, unplug/reconnect |
-| Encoder HIL | A/B sign, index, exact scale, zero, maximum speed, CLB missed/invalid-edge detection |
-| Motor HIL | One axis first, all modes, reversal, current limit, soft limit, physical E-stop |
+| DSP controller | A/B difference equation through order 16, saturation, state reset, mode switch, duty clamp, velocity filter |
+| DSP safety | Boot state, arm rules, disarm, timeout, CRC storm, software/physical stop path, CPU2 decoder/CLA failure |
+| SPI HIL | 1/5/10 MHz ramp, agreed mode, 1 kHz baseline, long run, unplug/reconnect; then optional one-DSP 5 kHz test at 10 MHz and validated 20 MHz if needed |
+| Encoder HIL | A/B sign, index, ×4 motor/×2 auxiliary scale, zero, all seven CPU2 decoders at aggregate maximum rate, missed/overrun detection |
+| Motor HIL | One axis first, all modes, reversal, bench-supply current limit, soft limit, physical E-stop |
 | Host RT | cyclictest baseline, scheduling/affinity, deadline/jitter histogram, no RT allocation/I/O |
 | ros2_control | Interface claiming, mode switching, lifecycle, inactive/offline device behavior |
 | Multi-DSP mock | 0/1/2 devices, isolation, reconnect, duplicate ID, version mismatch |
@@ -500,35 +559,38 @@ Exit criteria:
 The first pass is complete only when:
 
 1. The DSP always boots disarmed and no invalid/stale frame can enable an output.
-2. MC33926 PWM, disable, fault, current-feedback, and stop behavior match the
+2. MC33926 PWM, shared EN, per-axis STBY, and stop behavior match the
    reviewed PCB wiring.
-3. All six encoder paths have correct direction and scale at the required speed.
+3. All six motor encoders and four auxiliary encoder-only sensors have correct
+   direction and scale at their required simultaneous speeds.
 4. Position-count, velocity-count-rate, and duty modes work independently with
    bounded outputs, while ROS/UI conversions remain entirely on the Pi.
-5. Motor/encoder/gear conversion and controller parameters can be loaded from
-   YAML and edited in the UI; the Pi persists them safely, converts commands and
-   telemetry, and sends only acknowledged raw limits/gains to the DSP.
-6. One physical DSP sustains the selected 1 kHz rate for 10 minutes with the
-   M4 communication and deadline criteria.
+5. Motor/encoder/gear conversion, auxiliary encoder configuration, and controller
+   coefficients can be loaded from YAML and edited in the UI; the Pi persists
+   them safely, converts commands and telemetry, and sends only acknowledged raw
+   decoder configuration, limits, and A/B arrays to the DSP.
+6. One physical DSP sustains 5 kHz snapshot/control and 1 kHz streaming for
+   10 minutes with the M4 communication and deadline criteria.
 7. ROS/UI tests support at least two simultaneous mock DSPs without cross-talk.
 8. A 60-second recording completes with no dropped records and downloads through
    the UI.
-9. Communication loss, driver fault, E-stop, software limit, and process restart
+9. Communication loss, software E-stop, physical E-stop, software limit, and process restart
    all produce their documented safe behavior.
-10. A clean machine can build the ROS workspace and DSP RAM/Flash configurations
-    using only documented dependencies and commands.
+10. A clean machine can build the ROS workspace and both CPU1/CPU2 RAM
+    configurations using only documented dependencies and commands.
 
 ## 13. Explicitly deferred work
 
 Add these only after the first-pass Definition of Done:
 
-- Decoding the four reserved slow auxiliary encoders; their GPIO budget is
-  already closed in `PLAN/electronics.md`.
-- More than four cyclic ADC channels or differential ADC modes.
+- Index channels or motor outputs for the four auxiliary encoder-only sensors.
+- Any ADC acquisition in the current PCB profile; all 14 planned channels remain reserved.
 - DSP SPI-master control of TMC5160 or other peripherals.
 - Physical multi-DSP operation.
 - EtherCAT transport and migration to F28388D.
 - True motor-current/torque mode.
+- Current-feedback and auxiliary ADC acquisition on the reserved channels.
+- Flash boot configurations and production flashing.
 - CLA LQR or dynamically uploaded controller matrices.
 - Browser-side raw-data caching or CSV as the primary recorder format.
 - Internet exposure, cloud access, or deployment outside a trusted LAN.
@@ -538,20 +600,21 @@ Add these only after the first-pass Definition of Done:
 Existing DSP files are a useful starting point, not proof that the integrated
 system is complete:
 
-- [`motor.c`](../DSP_28379D/motor.c) configures 40 kHz PWM and disables every ePWM
-  trip-zone signal.
-- [`main.c`](../DSP_28379D/main.c) handles timeout by setting position references to
+- [`motor.c`](../dsp/f28379d/cpu1/motor.c) now has the locked 10 kHz pin map, but
+  protocol-driven arm/STBY sequencing is not implemented.
+- [`main.c`](../dsp/f28379d/cpu1/main.c) handles timeout by setting position references to
   zero; that can command motion toward encoder zero instead of disabling outputs.
-- The CLA currently implements one position-in-counts PID at the target 1 kHz;
-  velocity and duty modes are not implemented.
+- The CLA currently implements one legacy position-in-counts PID at 1 kHz; the
+  target 5 kHz position/velocity A/B controllers and duty mode are not implemented.
 - The SPI `cmd` field is parsed but ignored.
 - The current telemetry lacks measured velocity, DSP state, command
   acknowledgment, config revision, and device identity.
-- Axes 3–5 currently depend on nonexistent CPU2 code; the first-pass design
-  replaces that path with the gated CLB1–3 decoders in `PLAN/electronics.md`.
+- Axes 3–5 currently depend on the safe-idle CPU2 project; the first-pass design adds
+  gated eCAP/XINT decoders for them and the four auxiliary sensors as specified
+  in `PLAN/electronics.md`.
 - The current SPI test and DSP comments disagree about mode numbering; the final
   mode must be measured and documented.
-- The controlCARD GPIO allocation is closed provisionally in
+- The controlCARD GPIO allocation is closed for prototype wiring in
   `PLAN/electronics.md`; continuity from the custom MC33926 PCB remains to be
   checked.
 
