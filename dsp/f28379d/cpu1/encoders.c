@@ -39,6 +39,10 @@
 #define USE_EQEP2_INDEX_RESET  0
 #define USE_EQEP3_INDEX_RESET  0
 
+// Reject sub-microsecond level-shifter glitches without limiting the present
+// encoder rate. Three samples at 5 MHz require an input to stay stable ~0.6 us.
+#define EQEP_QUAL_SAMPLE_HZ    5000000U
+
 //
 // EQEP status bits that can be cleared by writing back to QEPSTS
 //
@@ -175,6 +179,13 @@ void Encoders_init(void)
     eqep_gpio_setup(EQEP3_GPIO_A, EQEP3_GPIO_B,
                     GPIO_62_EQEP3A, GPIO_63_EQEP3B,
                     true, EQEP3_GPIO_I, GPIO_65_EQEP3I);
+
+    apply_qual(EQEP1_GPIO_A, ENCODER_QUAL_3SAMPLE, EQEP_QUAL_SAMPLE_HZ);
+    apply_qual(EQEP1_GPIO_B, ENCODER_QUAL_3SAMPLE, EQEP_QUAL_SAMPLE_HZ);
+    apply_qual(EQEP2_GPIO_A, ENCODER_QUAL_3SAMPLE, EQEP_QUAL_SAMPLE_HZ);
+    apply_qual(EQEP2_GPIO_B, ENCODER_QUAL_3SAMPLE, EQEP_QUAL_SAMPLE_HZ);
+    apply_qual(EQEP3_GPIO_A, ENCODER_QUAL_3SAMPLE, EQEP_QUAL_SAMPLE_HZ);
+    apply_qual(EQEP3_GPIO_B, ENCODER_QUAL_3SAMPLE, EQEP_QUAL_SAMPLE_HZ);
 
     // Module config
     eqep_module_setup(EQEP1_BASE,
