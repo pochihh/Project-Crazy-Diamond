@@ -119,6 +119,7 @@ Words make_command(std::uint32_t command, const Values& values = {})
 
 struct Telemetry {
     std::uint32_t timestamp_us = 0;
+    Values requested_duty{};
     std::array<std::int32_t, kAxes> position{};
     Values duty{};
 };
@@ -138,7 +139,9 @@ Telemetry parse_telemetry(const Words& words)
         Telemetry telemetry;
         std::size_t offset = header + 2;
         telemetry.timestamp_us = get_u32(words, offset);
-        offset += kAxes * 2;  // legacy reference telemetry
+        for (float& value : telemetry.requested_duty) {
+            value = bits_float(get_u32(words, offset));
+        }
         for (auto& value : telemetry.position) {
             value = static_cast<std::int32_t>(get_u32(words, offset));
         }
@@ -433,6 +436,8 @@ void run_probe(SpiLink& link, const Options& options, Telemetry telemetry)
         if ((options.probe_mask & (1U << axis)) == 0U) continue;
         const auto delta = telemetry.position[axis] - initial[axis];
         std::cout << "Probe axis " << axis << ": duty=" << options.probe_duty
+                  << " accepted=" << telemetry.requested_duty[axis]
+                  << " applied=" << telemetry.duty[axis]
                   << " start=" << initial[axis] << " end=" << telemetry.position[axis]
                   << " delta=" << delta << " counts\n";
     }
