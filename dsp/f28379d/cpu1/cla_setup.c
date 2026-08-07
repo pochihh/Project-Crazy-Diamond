@@ -55,6 +55,7 @@ __interrupt void CLA1_Task_1_ISR(void)
     if (g_task1DoneCb) {
         g_task1DoneCb();
     }
+    CPUTimer_clearOverflowFlag(CPUTIMER0_BASE);
     CLA_clearTaskFlags(CLA1_BASE, CLA_TASKFLAG_1);
     Interrupt_clearACKGroup(INTERRUPT_ACK_GROUP11);
 }
@@ -79,9 +80,18 @@ void CLA_setup(uint32_t rate_hz)
     }
 
     //
+    // In a FLASH build, copy the CLA program while RAMLS4 is still CPU-owned.
+    // In a RAM debug build, the debugger loads it directly — no copy needed.
+    //
+#ifdef _FLASH
+    memcpy(&Cla1funcsRunStart, &Cla1funcsLoadStart,
+           (size_t)(uint32_t)&Cla1funcsLoadSize);
+#endif
+
+    //
     // Configure LSRAM controller select:
-    //   RAMLS4 → CLA program RAM (CPU+CLA1 access so debugger can write it)
-    //   RAMLS5 → CLA data RAM    (CPU+CLA1 dual access for shared gains)
+    //   RAMLS4 → CLA program RAM
+    //   RAMLS5 → CLA data RAM
     //
     EALLOW;
     MemCfg_setLSRAMControllerSel(MEMCFG_SECT_LS4, MEMCFG_LSRAMCONTROLLER_CPU_CLA1);
@@ -89,15 +99,6 @@ void CLA_setup(uint32_t rate_hz)
     MemCfg_setCLAMemType(MEMCFG_SECT_LS4, MEMCFG_CLA_MEM_PROGRAM);
     MemCfg_setCLAMemType(MEMCFG_SECT_LS5, MEMCFG_CLA_MEM_DATA);
     EDIS;
-
-    //
-    // In a FLASH build, copy the CLA program from flash to RAMLS4.
-    // In a RAM debug build, the debugger loads it directly — no copy needed.
-    //
-#ifdef _FLASH
-    memcpy(&Cla1funcsRunStart, &Cla1funcsLoadStart,
-           (size_t)(uint32_t)&Cla1funcsLoadSize);
-#endif
 
     //
     // Initialize CLA message RAMs (clear ECC bits, etc.)
@@ -155,6 +156,7 @@ void CLA_setup(uint32_t rate_hz)
     CPUTimer_setPeriod(CPUTIMER0_BASE,
                        (uint32_t)(DEVICE_SYSCLK_FREQ / rate_hz) - 1U);
     CPUTimer_reloadTimerCounter(CPUTIMER0_BASE);
+    CPUTimer_clearOverflowFlag(CPUTIMER0_BASE);
     CPUTimer_enableInterrupt(CPUTIMER0_BASE);
     CPUTimer_startTimer(CPUTIMER0_BASE);
 }

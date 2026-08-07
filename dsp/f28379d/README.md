@@ -32,9 +32,9 @@ target; CCS erases and programs the required flash sectors automatically.
 
 For programming through the controlCARD's onboard XDS100v2, set `A:SW1`
 position 1 up (`ON`). For standalone boot, power off, set `A:SW1` position 1
-down (`OFF`), set both positions of the main `SW1` up (`1,1`: Get Mode, Flash
-by default), then power-cycle the board. The Raspberry Pi must still send the
-normal ARM and DUTY commands before a motor can move.
+down (`OFF`), set both positions of the main `SW1` `OFF` / up (`1,1`: Get
+Mode, Flash by default), then power-cycle the board. The Raspberry Pi must
+still send the normal ARM and DUTY commands before a motor can move.
 
 C2000Ware is referenced through CCS product variables. The repository does not
 vendor a second copy of DriverLib.

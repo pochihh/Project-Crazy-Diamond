@@ -95,8 +95,8 @@ cable is connected. Wi-Fi remains available separately during development.
 | Switch | Function | CCS programming/debug | Standalone FLASH boot |
 |---|---|---|---|
 | `A:SW1` position 1 | Connects the onboard XDS100v2 debugger | `ON` / up | `OFF` / down |
-| Main `SW1` position 1 | Boot-mode GPIO72 | May remain up | `1` / up |
-| Main `SW1` position 2 | Boot-mode GPIO84 | May remain up | `1` / up |
+| Main `SW1` position 1 | Boot-mode GPIO72 | May remain `OFF` / up | `OFF` / up (`1`) |
+| Main `SW1` position 2 | Boot-mode GPIO84 | May remain `OFF` / up | `OFF` / up (`1`) |
 
 After programming the FLASH image, verify standalone boot as follows:
 
@@ -104,7 +104,7 @@ After programming the FLASH image, verify standalone boot as follows:
 2. Terminate or disconnect the CCS debug session.
 3. Power off the controlCARD. Never change these switches while powered.
 4. Set `A:SW1` position 1 to `OFF` / down. Leave its position 2 unchanged.
-5. Set both positions of the main `SW1` to `1` / up.
+5. Set both positions of the main `SW1` to `OFF` / up (`1,1`).
 6. Disconnect the debugger USB if desired, then power the board on.
 
 The DSP now boots from FLASH without CCS. Firmware starts with every motor
