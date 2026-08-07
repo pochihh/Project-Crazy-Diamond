@@ -283,31 +283,38 @@ static void swapTxBuffers(void)
 //
 static bool validateAndParseRx(const uint16_t *buf)
 {
-    if (buf[0] != RX_FRAME_HEADER) {
-        g_stats.frame_errors++;
-        return false;
-    }
-    if (buf[1] != RX_FRAME_VERSION) {
-        g_stats.frame_errors++;
-        return false;
+    const uint16_t *frame = NULL;
+    bool header_found = false;
+    uint16_t offset;
+
+    for (offset = 0U; offset <= (MAX_FRAME_WORDS - RX_FRAME_WORDS); offset++) {
+        if (buf[offset] != RX_FRAME_HEADER ||
+            buf[offset + 1U] != RX_FRAME_VERSION) continue;
+
+        header_found = true;
+        if (calcCRC16(&buf[offset], RX_FRAME_WORDS - 1U) ==
+            buf[offset + RX_FRAME_WORDS - 1U]) {
+            frame = &buf[offset];
+            break;
+        }
     }
 
-    uint16_t crc = calcCRC16(buf, RX_FRAME_WORDS - 1);
-    if (crc != buf[RX_FRAME_WORDS - 1]) {
-        g_stats.crc_errors++;
+    if (frame == NULL) {
+        if (header_found) g_stats.crc_errors++;
+        else              g_stats.frame_errors++;
         return false;
     }
 
     if (g_rxCallback) {
         RxFrame_t rx;
         uint16_t p = 2;
-        rx.cmd  = ((uint32_t)buf[p + 1] << 16) | buf[p]; p += 2;
-        rx.ref[0] = unpack_float(buf[p], buf[p+1]); p += 2;
-        rx.ref[1] = unpack_float(buf[p], buf[p+1]); p += 2;
-        rx.ref[2] = unpack_float(buf[p], buf[p+1]); p += 2;
-        rx.ref[3] = unpack_float(buf[p], buf[p+1]); p += 2;
-        rx.ref[4] = unpack_float(buf[p], buf[p+1]); p += 2;
-        rx.ref[5] = unpack_float(buf[p], buf[p+1]);
+        rx.cmd  = ((uint32_t)frame[p + 1] << 16) | frame[p]; p += 2;
+        rx.ref[0] = unpack_float(frame[p], frame[p+1]); p += 2;
+        rx.ref[1] = unpack_float(frame[p], frame[p+1]); p += 2;
+        rx.ref[2] = unpack_float(frame[p], frame[p+1]); p += 2;
+        rx.ref[3] = unpack_float(frame[p], frame[p+1]); p += 2;
+        rx.ref[4] = unpack_float(frame[p], frame[p+1]); p += 2;
+        rx.ref[5] = unpack_float(frame[p], frame[p+1]);
         g_rxCallback(&rx);
     }
 
