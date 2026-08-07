@@ -32,6 +32,7 @@ cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
 compile_commands.json
+/build/
 
 # React / Node / Vite
 node_modules/

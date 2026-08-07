@@ -6,18 +6,15 @@ Run these commands on the Raspberry Pi from the repository clone:
 cd ~/Project-Crazy-Diamond
 ```
 
-## Update and build the motor test
+## Build the motor test
 
 ```bash
-git pull --ff-only
-
-g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
-  dsp/f28379d/cpu1/tests/rpi_motor_control_test.cpp \
-  -o /tmp/rpi_motor_control_test
-
-install -m 0755 /tmp/rpi_motor_control_test ~/.local/bin/rpi_motor_control_test
-~/.local/bin/rpi_motor_control_test --self-test
+./build_test.sh
 ```
+
+The binary stays at `build/rpi_motor_control_test`; installation is not
+required. Re-run `./build_test.sh` after changing the user-tuning block in
+`dsp/f28379d/cpu1/tests/rpi_motor_control_test.cpp`.
 
 ## Run the continuous two-axis sine
 
@@ -25,8 +22,7 @@ The default run uses a 1 kHz Pi-side PI controller and continues until
 `Ctrl-C`:
 
 ```bash
-sudo taskset -c 3 chrt -f 80 ~/.local/bin/rpi_motor_control_test \
-  --enable-motors --sine
+./run_test.sh
 ```
 
 Current source defaults:
@@ -41,29 +37,26 @@ Current source defaults:
 | Maximum duty | 100% | 100% |
 
 The shared sine period is 1 second. Duration `0` means continuous. Edit the
-`Normal sine-run defaults` block in
+`User tuning` block in
 `dsp/f28379d/cpu1/tests/rpi_motor_control_test.cpp` to tune these values, then
-rebuild and reinstall the binary.
+rebuild the binary.
 
 For a bounded run, add a duration in seconds:
 
 ```bash
-sudo taskset -c 3 chrt -f 80 ~/.local/bin/rpi_motor_control_test \
-  --enable-motors --sine --duration 3
+./run_test.sh --sine --duration 3
 ```
 
 Command-line values can temporarily override the source defaults, for example:
 
 ```bash
-sudo taskset -c 3 chrt -f 80 ~/.local/bin/rpi_motor_control_test \
-  --enable-motors --sine --kp0 0.0006 --amp0 1500 --period 2
+./run_test.sh --sine --kp0 0.0006 --amp0 1500 --period 2
 ```
 
 Set one amplitude to zero to disable that axis for an isolated test:
 
 ```bash
-sudo taskset -c 3 chrt -f 80 ~/.local/bin/rpi_motor_control_test \
-  --enable-motors --sine --amp1 0 --period 5
+./run_test.sh --sine --amp1 0 --period 5
 ```
 
 ## Probe H-bridge axes
@@ -71,8 +64,7 @@ sudo taskset -c 3 chrt -f 80 ~/.local/bin/rpi_motor_control_test \
 Use a short, unloaded pulse before running a newly wired axis:
 
 ```bash
-sudo taskset -c 3 chrt -f 80 ~/.local/bin/rpi_motor_control_test \
-  --enable-motors --probe-axis 0 --probe-duty 0.03 --probe-ms 250
+./run_test.sh --probe-axis 0 --probe-duty 0.03 --probe-ms 250
 ```
 
 Use negative duty to verify the other direction. Change `--probe-axis` to `1`
@@ -80,9 +72,21 @@ for axis 1. Repeat `--probe-axis` to drive multiple axes, and use `--probe-ms 0`
 to hold until `Ctrl-C`:
 
 ```bash
-sudo taskset -c 3 chrt -f 80 ~/.local/bin/rpi_motor_control_test \
-  --enable-motors --probe-axis 0 --probe-axis 2 --probe-duty 0.1 --probe-ms 0
+./run_test.sh --probe-axis 0 --probe-axis 2 --probe-duty 0.1 --probe-ms 0
 ```
+
+## Wired bench LAN
+
+The Pi Ethernet interface uses static address `192.168.2.10/24` with no
+gateway. Configure the connected computer as another address in the same
+subnet, such as `192.168.2.11/24`, then connect with:
+
+```bash
+ssh toby@192.168.2.10
+```
+
+The Ethernet configuration activates automatically after boot whenever a
+cable is connected. Wi-Fi remains available separately during development.
 
 ## SPI communication-only test
 

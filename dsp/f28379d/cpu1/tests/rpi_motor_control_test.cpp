@@ -48,6 +48,11 @@ using Words = std::array<std::uint16_t, kFrameWords>;
 using Values = std::array<float, kAxes>;
 using Clock = std::chrono::steady_clock;
 
+class InvalidTelemetryFrame final : public std::runtime_error {
+public:
+    InvalidTelemetryFrame() : std::runtime_error("invalid DSP telemetry frame") {}
+};
+
 volatile std::sig_atomic_t g_stop = 0;
 
 void on_signal(int)
@@ -150,7 +155,7 @@ Telemetry parse_telemetry(const Words& words)
         }
         return telemetry;
     }
-    throw std::runtime_error("invalid DSP telemetry frame");
+    throw InvalidTelemetryFrame();
 }
 
 class SpiLink {
@@ -240,11 +245,28 @@ struct AxisTuning {
     double max_duty = 1.0;
 };
 
-// ============ Normal sine-run defaults (edit these to tune) ============
-constexpr AxisTuning kAxis0Defaults{0.0005, 0.001, 0.0, 2000.0, -1.0, 1.0};
-constexpr AxisTuning kAxis1Defaults{0.0005, 0.001, 0.0, 2000.0, -1.0, 1.0};
+// ============ User tuning: edit this block, then run ./build_test.sh ============
+constexpr AxisTuning kAxis0Defaults{
+    0.0005,  // Kp
+    0.001,   // Ki
+    0.0,     // Kd
+    2000.0,  // sine amplitude [encoder counts]
+    -1.0,    // motor direction sign
+    1.0      // maximum absolute duty [0, 1]
+};
+constexpr AxisTuning kAxis1Defaults{
+    0.0005,  // Kp
+    0.001,   // Ki
+    0.0,     // Kd
+    2000.0,  // sine amplitude [encoder counts]
+    -1.0,    // motor direction sign
+    1.0      // maximum absolute duty [0, 1]
+};
 constexpr double kSinePeriodSeconds = 1.0;
 constexpr double kSineDurationSeconds = 0.0;  // 0 = continuous until Ctrl-C
+constexpr double kTrackingErrorFloorCounts = 100.0;
+constexpr double kTrackingErrorAmplitudeFactor = 2.0;
+constexpr std::uint32_t kPrintEveryFrames = 100;  // 0 disables periodic output
 
 struct Pid {
     explicit Pid(const AxisTuning& tuning) : tuning(tuning) {}
@@ -417,15 +439,21 @@ Clock::time_point wait_next(Clock::time_point scheduled,
 
 Telemetry get_initial_telemetry(SpiLink& link)
 {
+    Telemetry telemetry;
+    bool synchronized = false;
     for (int frame = 0; frame < 10; ++frame) {
         try {
-            return link.exchange(kDisarmCommand);
-        } catch (const std::runtime_error&) {
+            telemetry = link.exchange(kDisarmCommand);
+            synchronized = true;
+        } catch (const InvalidTelemetryFrame&) {
             // The first full-duplex response after opening SPI may be stale.
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    throw std::runtime_error("DSP telemetry did not synchronize after 10 frames");
+    if (!synchronized) {
+        throw std::runtime_error("DSP telemetry did not synchronize after 10 frames");
+    }
+    return telemetry;
 }
 
 void run_probe(SpiLink& link, const Options& options, Telemetry telemetry)
@@ -489,7 +517,9 @@ void run_sine(SpiLink& link, const Options& options, Telemetry telemetry)
             }
             target[axis] = center[axis] + options.axis[axis].amplitude * sine;
             const double error = target[axis] - telemetry.position[axis];
-            const double max_error = std::max(100.0, 2.0 * options.axis[axis].amplitude);
+            const double max_error = std::max(
+                kTrackingErrorFloorCounts,
+                kTrackingErrorAmplitudeFactor * options.axis[axis].amplitude);
             if (std::abs(error) > max_error) {
                 throw std::runtime_error("axis " + std::to_string(axis) +
                                          " tracking error limit exceeded");
@@ -498,7 +528,7 @@ void run_sine(SpiLink& link, const Options& options, Telemetry telemetry)
         }
 
         telemetry = link.exchange(kDutyCommand, duty);
-        if (frame % 100U == 0U) {
+        if (kPrintEveryFrames != 0U && frame % kPrintEveryFrames == 0U) {
             std::cout << std::fixed << std::setprecision(1)
                       << "t=" << elapsed << " target_rel=["
                       << target[0] - center[0] << ',' << target[1] - center[1]
@@ -516,15 +546,8 @@ void run_sine(SpiLink& link, const Options& options, Telemetry telemetry)
 
 bool self_test()
 {
-    const Options defaults;
-    if (defaults.axis[0].amplitude != 2000.0 ||
-        defaults.axis[1].amplitude != 2000.0 ||
-        defaults.period_s != 1.0 || defaults.duration_s != 0.0 ||
-        sine_arm_mask(defaults) != 0x03U) {
-        return false;
-    }
-
-    Options axis0_only = defaults;
+    Options axis0_only;
+    axis0_only.axis[0].amplitude = 1.0;
     axis0_only.axis[1].amplitude = 0.0;
     if (sine_arm_mask(axis0_only) != 0x01U) return false;
 
@@ -552,9 +575,17 @@ int main(int argc, char** argv)
         return passed ? 0 : 1;
     }
 
+    Options options;
     try {
-        const Options options = parse_options(argc, argv);
+        options = parse_options(argc, argv);
         validate(options);
+    } catch (const std::invalid_argument& error) {
+        usage(argv[0]);
+        std::cerr << "error: " << error.what() << '\n';
+        return 2;
+    }
+
+    try {
         require_realtime();
         std::signal(SIGINT, on_signal);
         std::signal(SIGTERM, on_signal);
@@ -565,7 +596,6 @@ int main(int argc, char** argv)
         else run_sine(link, options, telemetry);
         return 0;
     } catch (const std::exception& error) {
-        usage(argv[0]);
         std::cerr << "error: " << error.what() << '\n';
         return 1;
     }
