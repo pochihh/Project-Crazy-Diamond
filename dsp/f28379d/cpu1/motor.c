@@ -175,14 +175,33 @@ void Motor_setAllOutputs(const float u[6])
 }
 
 //
+// ============ Motor_arm ============
+//
+void Motor_arm(uint16_t axis_mask)
+{
+    uint16_t k;
+    axis_mask &= 0x003FU;
+
+    GPIO_writePin(MOTOR_EN_GPIO, 0U);
+    for (k = 0U; k < NUM_AXES; k++) {
+        Motor_setOutput(k, 0.0f);
+        GPIO_writePin(kStbyGpio[k],
+                      (axis_mask & (uint16_t)(1U << k)) ? 1U : 0U);
+    }
+    if (axis_mask != 0U) {
+        GPIO_writePin(MOTOR_EN_GPIO, 1U);
+    }
+}
+
+//
 // ============ Motor_stop ============
 //
 void Motor_stop(void)
 {
     uint16_t k;
+    GPIO_writePin(MOTOR_EN_GPIO, 0U);
     for (k = 0U; k < NUM_AXES; k++) {
         Motor_setOutput(k, 0.0f);
         GPIO_writePin(kStbyGpio[k], 0U);
     }
-    GPIO_writePin(MOTOR_EN_GPIO, 0U);
 }

@@ -45,6 +45,12 @@ void Motor_setOutput(uint16_t axis, float u);
 void Motor_setAllOutputs(const float u[6]);
 
 //
+// Arm only the axes selected by bits 0-5. PWM is forced to zero before the
+// selected STBY pins and shared EN are asserted.
+//
+void Motor_arm(uint16_t axis_mask);
+
+//
 // Safe stop: zero all axes, drive every STBY low, and drive shared EN low.
 //
 void Motor_stop(void);

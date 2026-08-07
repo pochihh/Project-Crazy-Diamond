@@ -48,6 +48,12 @@
 #define RX_FRAME_HEADER         0x55AA
 #define RX_FRAME_VERSION        0x0002
 
+// Temporary bring-up commands carried in RxFrame_t.cmd. The production v4
+// protocol replaces these magic values with its typed command field.
+#define RX_CMD_DUTY             0x44555459UL  // "DUTY", ref[0..5] = [-1, 1]
+#define RX_CMD_DISARM           0x53544F50UL  // "STOP"
+#define RX_CMD_ARM_PREFIX       0x41524D00UL  // "ARM" + axis mask in low byte
+
 //
 // ============ SPI Pin Definitions ============
 //

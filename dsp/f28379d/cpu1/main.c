@@ -15,14 +15,14 @@
 //   Control loop flow:
 //     1. main loop polls encoder state
 //     2. CPU writes gEncPos[] → gCpuToCla.pos[] before each CLA tick
-//     3. CLA Task 1 fires at 5 kHz:  reads pos/ref, outputs u[]
-//     4. CLA1_Task_1_ISR (PIE 11.1): drives motors with gClaToCpu.u[]
+//     3. CLA Task 1 fires at 5 kHz and snapshots control telemetry
+//     4. CLA1_Task_1_ISR (PIE 11.1): applies the latest host duty command
 //        and calls SpiDma_updateTx() with latest telemetry
-//     5. When SPI frame arrives: SpiDma rx callback writes ref → gCpuToCla
+//     5. SPI ARM/DUTY/DISARM commands update the staged host command
 //
 //   Safety:
-//     - If SPI command not received within CMD_TIMEOUT_US, references
-//       are zeroed and motors are stopped.
+//     - If SPI duty command is not received within CMD_TIMEOUT_US, shared EN
+//       and all STBY/PWM outputs are disabled at the next 5 kHz boundary.
 //
 // BUILD:
 //   Add to the RAM config in .cproject:
@@ -73,17 +73,44 @@ static uint16_t gAdc[6] = {0};
 #define CMD_TIMEOUT_US      50000U   // 50 ms: zero refs if no command
 
 static volatile uint32_t gLastCmdTimeUs = 0U;
+static volatile uint16_t gRequestedArmMask = 0U;
+static volatile uint16_t gArmedMask = 0U;
+static volatile float gHostDuty[6] = {0.0f};
 
 // Called from SPI DMA CS ISR when a valid RX frame arrives
 static void onSpiFrame(const RxFrame_t *rx)
 {
     uint16_t k;
-    gLastCmdTimeUs = micros();
+    float duty[6];
+
+    if (rx->cmd == RX_CMD_DISARM) {
+        gRequestedArmMask = 0U;
+        for (k = 0U; k < 6U; k++) gHostDuty[k] = 0.0f;
+        gLastCmdTimeUs = micros();
+        return;
+    }
+
+    if ((rx->cmd & 0xFFFFFF00UL) == RX_CMD_ARM_PREFIX) {
+        uint16_t mask = (uint16_t)(rx->cmd & 0x00FFU);
+        if ((mask & 0xFFC0U) == 0U) {
+            for (k = 0U; k < 6U; k++) gHostDuty[k] = 0.0f;
+            gRequestedArmMask = mask;
+            gLastCmdTimeUs = micros();
+        }
+        return;
+    }
+
+    if (rx->cmd != RX_CMD_DUTY || gRequestedArmMask == 0U) return;
 
     for (k = 0U; k < 6U; k++) {
-        gCpuToCla.ref[k] = rx->ref[k];
+        duty[k] = rx->ref[k];
+        // This comparison also rejects NaN and infinities.
+        if (!(duty[k] >= -1.0f && duty[k] <= 1.0f)) return;
     }
-    // rx->cmd can be used for mode switching (not implemented here)
+    for (k = 0U; k < 6U; k++) {
+        gHostDuty[k] = duty[k];
+    }
+    gLastCmdTimeUs = micros();
 }
 
 //
@@ -97,14 +124,26 @@ static void onClaTask1Done(void)
 {
     uint16_t k;
     float u[6];
+    uint16_t requested_mask = gRequestedArmMask;
 
-    // Read CLA outputs
-    for (k = 0U; k < 6U; k++) {
-        u[k] = gClaToCpu.u[k];
+    if (requested_mask != 0U &&
+        (micros() - gLastCmdTimeUs) > CMD_TIMEOUT_US) {
+        requested_mask = 0U;
+        gRequestedArmMask = 0U;
+        for (k = 0U; k < 6U; k++) gHostDuty[k] = 0.0f;
     }
 
-    // Drive motors
-    Motor_setAllOutputs(u);
+    if (requested_mask != gArmedMask) {
+        Motor_stop();
+        if (requested_mask != 0U) Motor_arm(requested_mask);
+        gArmedMask = requested_mask;
+    }
+
+    for (k = 0U; k < 6U; k++) {
+        u[k] = (gArmedMask & (uint16_t)(1U << k)) ? gHostDuty[k] : 0.0f;
+    }
+
+    if (gArmedMask != 0U) Motor_setAllOutputs(u);
 
     // Queue next SPI TX frame with latest telemetry
     TxFrame_t tx;
@@ -113,7 +152,7 @@ static void onClaTask1Done(void)
     tx.err_count    = (uint16_t)(gClaToCpu.cycle_count & 0xFFFFU);
 
     for (k = 0U; k < 6U; k++) {
-        tx.ref[k] = gCpuToCla.ref[k];
+        tx.ref[k] = gHostDuty[k];
         tx.pos[k] = gEncPos[k];
         tx.u[k]   = u[k];
         tx.adc[k] = gAdc[k];
@@ -183,14 +222,6 @@ void main(void)
         Encoders_updatePosition();
         for (k = 0U; k < 6U; k++) {
             gCpuToCla.pos[k] = gEncPos[k];
-        }
-
-        // Command timeout: zero refs and stop motors if RPi goes silent
-        if ((micros() - gLastCmdTimeUs) > CMD_TIMEOUT_US) {
-            for (k = 0U; k < 6U; k++) {
-                gCpuToCla.ref[k] = 0.0f;
-            }
-            CLA_resetIntegrators(0xFFU);
         }
 
         // LED heartbeat: blink LED1 at ~2 Hz using CLA cycle count
