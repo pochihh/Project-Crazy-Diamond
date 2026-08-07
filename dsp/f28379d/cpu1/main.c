@@ -25,10 +25,7 @@
 //       and all STBY/PWM outputs are disabled at the next 5 kHz boundary.
 //
 // BUILD:
-//   Add to the RAM config in .cproject:
-//     spi_dma.c, cla_setup.c, cla_pid.cla, encoders.c, motor.c, main.c
-//   Source files: device/device.c
-//   Linker cmd: 2837xD_RAM_lnk_cpu1.cmd
+//   CCS RAM and FLASH configurations select the matching linker command file.
 //
 //#############################################################################
 

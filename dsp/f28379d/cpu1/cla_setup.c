@@ -90,7 +90,7 @@ void CLA_setup(uint32_t rate_hz)
     EDIS;
 
     //
-    // In a FLASH build, copy CLA program from FLASHC to RAMLS4.
+    // In a FLASH build, copy the CLA program from flash to RAMLS4.
     // In a RAM debug build, the debugger loads it directly — no copy needed.
     //
 #ifdef _FLASH
