@@ -463,7 +463,8 @@ void run_sine(SpiLink& link, const Options& options, Telemetry telemetry)
             std::cout << std::fixed << std::setprecision(1)
                       << "t=" << elapsed << " target=[" << target[0] << ',' << target[1]
                       << "] pos=[" << telemetry.position[0] << ',' << telemetry.position[1]
-                      << "] duty=[" << duty[0] << ',' << duty[1] << "]\n";
+                      << "] duty=[" << std::setprecision(4) << duty[0] << ',' << duty[1]
+                      << "]\n";
         }
         ++frame;
         scheduled = wait_next(scheduled, period);
