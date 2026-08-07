@@ -234,8 +234,14 @@ struct AxisTuning {
     double kd = 0.0;
     double amplitude = 0.0;
     double sign = 1.0;
-    double max_duty = 0.05;
+    double max_duty = 1.0;
 };
+
+// ============ Normal sine-run defaults (edit these to tune) ============
+constexpr AxisTuning kAxis0Defaults{0.0005, 0.001, 0.0, 2000.0, -1.0, 1.0};
+constexpr AxisTuning kAxis1Defaults{0.0005, 0.001, 0.0, 2000.0, -1.0, 1.0};
+constexpr double kSinePeriodSeconds = 1.0;
+constexpr double kSineDurationSeconds = 0.0;  // 0 = continuous until Ctrl-C
 
 struct Pid {
     explicit Pid(const AxisTuning& tuning) : tuning(tuning) {}
@@ -264,9 +270,9 @@ struct Options {
     int probe_axis = -1;
     double probe_duty = 0.0;
     int probe_ms = 250;
-    std::array<AxisTuning, 2> axis{};
-    double period_s = 1.0;
-    double duration_s = 10.0;
+    std::array<AxisTuning, 2> axis{kAxis0Defaults, kAxis1Defaults};
+    double period_s = kSinePeriodSeconds;
+    double duration_s = kSineDurationSeconds;
     std::string device = "/dev/spidev0.0";
 };
 
@@ -298,7 +304,8 @@ void usage(const char* program)
         << "  sudo taskset -c 3 chrt -f 80 " << program
         << " --enable-motors --probe-axis N --probe-duty D [--probe-ms MS]\n"
         << "  sudo taskset -c 3 chrt -f 80 " << program
-        << " --enable-motors --sine --kp0 X --ki0 X --kd0 X --amp0 COUNTS"
+        << " --enable-motors --sine\n"
+        << "    Optional overrides: --kp0 X --ki0 X --kd0 X --amp0 COUNTS"
            " --sign0 +/-1 --max-duty0 X --kp1 X --ki1 X --kd1 X"
            " --amp1 COUNTS --sign1 +/-1 --max-duty1 X"
            " [--period SEC] [--duration SEC]\n";
@@ -355,14 +362,14 @@ void validate(const Options& options)
         return;
     }
     if (options.period_s < 0.1 || options.period_s > 60.0 ||
-        options.duration_s <= 0.0 || options.duration_s > 60.0) {
-        throw std::invalid_argument("period must be 0.1-60 s and duration must be 0-60 s");
+        options.duration_s < 0.0 || options.duration_s > 3600.0) {
+        throw std::invalid_argument("period must be 0.1-60 s and duration must be 0-3600 s (0 is continuous)");
     }
     for (const auto& axis : options.axis) {
         if ((axis.sign != -1.0 && axis.sign != 1.0) || axis.amplitude < 0.0 ||
             axis.amplitude > 10000.0 ||
-            axis.max_duty <= 0.0 || axis.max_duty > 0.2) {
-            throw std::invalid_argument("sine requires sign +/-1, amplitude 0-10000 counts, and 0 < max duty <= 0.2");
+            axis.max_duty <= 0.0 || axis.max_duty > 1.0) {
+            throw std::invalid_argument("sine requires sign +/-1, amplitude 0-10000 counts, and 0 < max duty <= 1");
         }
     }
 }
@@ -443,7 +450,7 @@ void run_sine(SpiLink& link, const Options& options, Telemetry telemetry)
 
     while (!g_stop) {
         const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
-        if (elapsed >= options.duration_s) break;
+        if (options.duration_s > 0.0 && elapsed >= options.duration_s) break;
         const double sine = std::sin(2.0 * kPi * elapsed / options.period_s);
 
         std::array<double, 2> target{};
@@ -474,6 +481,13 @@ void run_sine(SpiLink& link, const Options& options, Telemetry telemetry)
 
 bool self_test()
 {
+    const Options defaults;
+    if (defaults.axis[0].amplitude != 2000.0 ||
+        defaults.axis[1].amplitude != 2000.0 ||
+        defaults.period_s != 1.0 || defaults.duration_s != 0.0) {
+        return false;
+    }
+
     const Words command = make_command(kDutyCommand, {0.25F, -0.25F});
     if (command[0] != kCommandHeader || command[1] != kCommandVersion ||
         command[2] != 0x5459U || command[3] != 0x4455U ||
