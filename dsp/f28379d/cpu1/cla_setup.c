@@ -49,6 +49,7 @@ static CLA_task1DoneCallback g_task1DoneCb = NULL;
 // Fires in PIE group 11 after CLA Task 1 completes.
 // Calls the registered callback so main.c can drive motors immediately.
 //
+#pragma CODE_SECTION(CLA1_Task_1_ISR, ".TI.ramfunc")
 __interrupt void CLA1_Task_1_ISR(void)
 {
     if (g_task1DoneCb) {

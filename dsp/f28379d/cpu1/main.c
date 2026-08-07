@@ -53,6 +53,7 @@ static void microsTimer_init(void)
     CPUTimer_startTimer(CPUTIMER1_BASE);
 }
 
+#pragma CODE_SECTION(micros, ".TI.ramfunc")
 static uint32_t micros(void)
 {
     // Timer counts down directly at 1 MHz and wraps naturally at 2^32 us.
@@ -75,6 +76,7 @@ static volatile uint16_t gArmedMask = 0U;
 static volatile float gHostDuty[6] = {0.0f};
 
 // Called from SPI DMA CS ISR when a valid RX frame arrives
+#pragma CODE_SECTION(onSpiFrame, ".TI.ramfunc")
 static void onSpiFrame(const RxFrame_t *rx)
 {
     uint16_t k;
@@ -115,8 +117,9 @@ static void onSpiFrame(const RxFrame_t *rx)
 //
 // Runs from PIE 11.1 ISR after each 5 kHz CLA tick.
 // Reads gClaToCpu.u[] and drives motors.
-// Also prepares and queues the next SPI TX frame.
+// Queues a fresh snapshot at 5 kHz; the SPI master streams it at 1 kHz.
 //
+#pragma CODE_SECTION(onClaTask1Done, ".TI.ramfunc")
 static void onClaTask1Done(void)
 {
     uint16_t k;

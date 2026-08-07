@@ -87,6 +87,13 @@ static inline float unpack_float(uint16_t lo_w, uint16_t hi_w) {
 // ============ ISR runs from RAM for deterministic latency ============
 //
 #pragma CODE_SECTION(SpiDma_csIsr, ".TI.ramfunc")
+#pragma CODE_SECTION(calcCRC16, ".TI.ramfunc")
+#pragma CODE_SECTION(startDma, ".TI.ramfunc")
+#pragma CODE_SECTION(stopDma, ".TI.ramfunc")
+#pragma CODE_SECTION(rearmDma, ".TI.ramfunc")
+#pragma CODE_SECTION(swapRxBuffers, ".TI.ramfunc")
+#pragma CODE_SECTION(swapTxBuffers, ".TI.ramfunc")
+#pragma CODE_SECTION(validateAndParseRx, ".TI.ramfunc")
 
 //
 // ============ CRC-16/CCITT-FALSE ============
