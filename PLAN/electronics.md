@@ -71,12 +71,12 @@ The exact schematic is unavailable, but continuity established:
 - Native `D1` is grounded.
 - PCB `PWM` and `DIR` pass through intermediate logic; use them as the board
   contract without assuming the hidden IN1/IN2 truth table.
-- `SLEW` is pulled to ground through 1 kΩ, so PWM is fixed at 10 kHz.
+- Powered-board measurement puts `SLEW` at 3.3 V (fast slew), permitting 20 kHz PWM.
 - `SF` and `FB` are not exposed on the current PCB.
 
 | Board signal | DSP resource | Required behavior |
 |---|---|---|
-| `PWM1`–`PWM6` | ePWM1A–ePWM6A | 10 kHz duty magnitude; zero before direction changes |
+| `PWM1`–`PWM6` | ePWM1A–ePWM6A | 20 kHz duty magnitude; zero before direction changes |
 | `DIR1`–`DIR6` | six GPIO outputs | Per-axis direction |
 | `STBY1`–`STBY6` | six GPIO outputs | Low disables/stands by that axis; high permits drive |
 | `MOTOR_EN` | one GPIO output branched to all six `EN` inputs | Low disables all axes; high permits operation |
@@ -230,7 +230,7 @@ and no ADC converter/SOC is enabled for them.
 
 - [ ] Trace each custom-PCB `PWM`, `DIR`, `STBY`, and `EN` connector position.
 - [x] Confirm PCB EN → native EN, PCB STBY → native D2, and native D1 grounded.
-- [x] Confirm SLEW is pulled to ground by 1 kΩ and lock PWM to 10 kHz.
+- [x] Measure powered `SLEW` at 3.3 V (fast) and set PWM to 20 kHz.
 - [x] Verify one MC3486/TXS0108E channel produces a clean 3.3 V waveform.
 - [ ] Scope all 23 translated encoder channels over the required rates.
 - [ ] Verify every selected HSEC pin against continuity and the controlCARD revision.

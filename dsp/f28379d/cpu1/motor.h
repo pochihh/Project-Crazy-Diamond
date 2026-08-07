@@ -13,7 +13,7 @@
 //     Negative: DIR=0
 //     Zero:     PWM=0
 //
-//   PWM frequency: 10 kHz for the board's low-SLEW configuration.
+//   PWM frequency: 20 kHz with the powered board's SLEW input high.
 //
 //#############################################################################
 

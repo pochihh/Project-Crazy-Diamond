@@ -138,7 +138,7 @@ outputs unconnected.
 | Native `EN` | PCB `EN`; all six PCB EN inputs branch from shared `MOTOR_EN` |
 | Native `D2` | PCB `STBY`; one separate DSP GPIO per axis |
 | Native `D1` | Grounded on the existing PCB |
-| Native `SLEW` | Pulled to ground through 1 kΩ; DSP PWM is fixed at 10 kHz |
+| Native `SLEW` | Measures 3.3 V with PCB powered (fast slew); DSP PWM is 20 kHz |
 | `SF` | Not exposed by the current PCB; do not wire a DSP fault input |
 | `FB` | Not exposed by the current PCB; ADCA0–5 remain reserved and disabled |
 

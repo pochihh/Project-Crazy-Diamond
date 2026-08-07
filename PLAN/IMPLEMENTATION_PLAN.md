@@ -68,7 +68,7 @@ LQR implementation.
 | Network scope | Same trusted Wi-Fi/LAN only; no cloud service or internet discovery |
 | ROS distribution | Jazzy, matching Ubuntu 24.04 and the Project NUEVO baseline |
 | DSP project form | Two independent CCS executables, CPU1 and CPU2; RAM-only during initial iteration |
-| Motor board | Shared EN, six separate STBY, 10 kHz PWM; no exposed SF/current feedback |
+| Motor board | Shared EN, six separate STBY, 20 kHz PWM; no exposed SF/current feedback |
 | Homing | Six active-low GPIO switches with internal pull-ups, polled by CPU1 at 5 kHz |
 | External E-stop | Purely physical; no DSP status or control wire |
 
@@ -126,7 +126,7 @@ Target timing for the current board:
 
 | Function | Rate | Trigger/owner |
 |---|---:|---|
-| MC33926 PWM | 10 kHz | ePWM hardware; SLEW is pulled low through 1 kΩ |
+| MC33926 PWM | 20 kHz | ePWM hardware; powered-board SLEW measures 3.3 V (fast) |
 | Encoder snapshot and home-input poll | 5 kHz | ePWM-synchronized CPU1 control ISR |
 | CLA control calculation | 5 kHz | CPU1-triggered CLA task |
 | SPI command/telemetry | 1 kHz | Pi transaction + DSP DMA |
@@ -600,12 +600,12 @@ Add these only after the first-pass Definition of Done:
 Existing DSP files are a useful starting point, not proof that the integrated
 system is complete:
 
-- [`motor.c`](../dsp/f28379d/cpu1/motor.c) now has the locked 10 kHz pin map, but
-  protocol-driven arm/STBY sequencing is not implemented.
-- [`main.c`](../dsp/f28379d/cpu1/main.c) handles timeout by setting position references to
-  zero; that can command motion toward encoder zero instead of disabling outputs.
-- The CLA currently implements one legacy position-in-counts PID at 1 kHz; the
-  target 5 kHz position/velocity A/B controllers and duty mode are not implemented.
+- [`motor.c`](../dsp/f28379d/cpu1/motor.c) has the locked 20 kHz pin map and
+  protocol-driven arm/STBY sequencing, validated on axes 0 and 1.
+- [`main.c`](../dsp/f28379d/cpu1/main.c) disarms shared EN, STBY, and PWM after
+  50 ms without a valid duty command.
+- The 5 kHz CLA scheduling is active; full typed position/velocity A/B
+  controllers remain to be implemented after host-duty bring-up.
 - The SPI `cmd` field is parsed but ignored.
 - The current telemetry lacks measured velocity, DSP state, command
   acknowledgment, config revision, and device identity.
