@@ -88,6 +88,33 @@ ssh toby@192.168.2.10
 The Ethernet configuration activates automatically after boot whenever a
 cable is connected. Wi-Fi remains available separately during development.
 
+## DSP FLASH boot and debugger switches
+
+`A:SW1` and the main `SW1` are different switches on the F28379D controlCARD:
+
+| Switch | Function | CCS programming/debug | Standalone FLASH boot |
+|---|---|---|---|
+| `A:SW1` position 1 | Connects the onboard XDS100v2 debugger | `ON` / up | `OFF` / down |
+| Main `SW1` position 1 | Boot-mode GPIO72 | May remain up | `1` / up |
+| Main `SW1` position 2 | Boot-mode GPIO84 | May remain up | `1` / up |
+
+After programming the FLASH image, verify standalone boot as follows:
+
+1. Stop the Pi motor test and leave motor power off or the E-stop engaged.
+2. Terminate or disconnect the CCS debug session.
+3. Power off the controlCARD. Never change these switches while powered.
+4. Set `A:SW1` position 1 to `OFF` / down. Leave its position 2 unchanged.
+5. Set both positions of the main `SW1` to `1` / up.
+6. Disconnect the debugger USB if desired, then power the board on.
+
+The DSP now boots from FLASH without CCS. Firmware starts with every motor
+disarmed; the Pi must send valid ARM and DUTY commands before motion is
+possible.
+
+To program or debug again, power off, set `A:SW1` position 1 to `ON` / up,
+connect the debugger USB, power on, and start the CCS session. The main `SW1`
+can remain at `1,1` because JTAG loading does not depend on the boot switches.
+
 ## SPI communication-only test
 
 Only use `--motor-power-off` when motor power is physically disconnected:
