@@ -478,8 +478,11 @@ void run_sine(SpiLink& link, const Options& options, Telemetry telemetry)
         telemetry = link.exchange(kDutyCommand, duty);
         if (frame % 100U == 0U) {
             std::cout << std::fixed << std::setprecision(1)
-                      << "t=" << elapsed << " target=[" << target[0] << ',' << target[1]
-                      << "] pos=[" << telemetry.position[0] << ',' << telemetry.position[1]
+                      << "t=" << elapsed << " target_rel=["
+                      << target[0] - center[0] << ',' << target[1] - center[1]
+                      << "] pos_rel=["
+                      << telemetry.position[0] - center[0] << ','
+                      << telemetry.position[1] - center[1]
                       << "] duty=[" << std::setprecision(4) << duty[0] << ',' << duty[1]
                       << "]\n";
         }
