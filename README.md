@@ -59,7 +59,7 @@ sudo taskset -c 3 chrt -f 80 ~/.local/bin/rpi_motor_control_test \
   --enable-motors --sine --kp0 0.0006 --amp0 1500 --period 2
 ```
 
-## Probe one H-bridge axis
+## Probe H-bridge axes
 
 Use a short, unloaded pulse before running a newly wired axis:
 
@@ -69,7 +69,13 @@ sudo taskset -c 3 chrt -f 80 ~/.local/bin/rpi_motor_control_test \
 ```
 
 Use negative duty to verify the other direction. Change `--probe-axis` to `1`
-for axis 1.
+for axis 1. Repeat `--probe-axis` to drive multiple axes, and use `--probe-ms 0`
+to hold until `Ctrl-C`:
+
+```bash
+sudo taskset -c 3 chrt -f 80 ~/.local/bin/rpi_motor_control_test \
+  --enable-motors --probe-axis 0 --probe-axis 2 --probe-duty 0.1 --probe-ms 0
+```
 
 ## SPI communication-only test
 

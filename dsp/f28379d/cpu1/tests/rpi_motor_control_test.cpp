@@ -267,7 +267,7 @@ struct Pid {
 struct Options {
     bool enable_motors = false;
     bool sine = false;
-    int probe_axis = -1;
+    std::uint16_t probe_mask = 0;
     double probe_duty = 0.0;
     int probe_ms = 250;
     std::array<AxisTuning, 2> axis{kAxis0Defaults, kAxis1Defaults};
@@ -302,7 +302,8 @@ void usage(const char* program)
         << "Usage:\n"
         << "  " << program << " --self-test\n"
         << "  sudo taskset -c 3 chrt -f 80 " << program
-        << " --enable-motors --probe-axis N --probe-duty D [--probe-ms MS]\n"
+        << " --enable-motors --probe-axis N [--probe-axis N ...]"
+           " --probe-duty D [--probe-ms MS]\n"
         << "  sudo taskset -c 3 chrt -f 80 " << program
         << " --enable-motors --sine\n"
         << "    Optional overrides: --kp0 X --ki0 X --kd0 X --amp0 COUNTS"
@@ -323,7 +324,11 @@ Options parse_options(int argc, char** argv)
 
         if (arg == "--enable-motors") options.enable_motors = true;
         else if (arg == "--sine") options.sine = true;
-        else if (arg == "--probe-axis") options.probe_axis = integer(value(), "probe axis");
+        else if (arg == "--probe-axis") {
+            const int axis = integer(value(), "probe axis");
+            if (axis < 0 || axis > 5) throw std::invalid_argument("probe axis must be 0-5");
+            options.probe_mask |= static_cast<std::uint16_t>(1U << axis);
+        }
         else if (arg == "--probe-duty") options.probe_duty = number(value(), "probe duty");
         else if (arg == "--probe-ms") options.probe_ms = integer(value(), "probe duration");
         else if (arg == "--kp0") options.axis[0].kp = number(value(), "kp0");
@@ -351,13 +356,13 @@ void validate(const Options& options)
     if (!options.enable_motors) {
         throw std::invalid_argument("--enable-motors is required");
     }
-    if (options.sine == (options.probe_axis >= 0)) {
+    if (options.sine == (options.probe_mask != 0U)) {
         throw std::invalid_argument("select exactly one of --sine or --probe-axis");
     }
-    if (options.probe_axis >= 0) {
-        if (options.probe_axis > 5 || std::abs(options.probe_duty) > 0.1 ||
-            options.probe_duty == 0.0 || options.probe_ms < 10 || options.probe_ms > 1000) {
-            throw std::invalid_argument("probe requires axis 0-5, nonzero |duty| <= 0.1, and 10-1000 ms");
+    if (options.probe_mask != 0U) {
+        if (std::abs(options.probe_duty) > 0.1 || options.probe_duty == 0.0 ||
+            (options.probe_ms != 0 && (options.probe_ms < 10 || options.probe_ms > 60000))) {
+            throw std::invalid_argument("probe requires nonzero |duty| <= 0.1 and 10-60000 ms (0 is continuous)");
         }
         return;
     }
@@ -406,31 +411,31 @@ Telemetry get_initial_telemetry(SpiLink& link)
 
 void run_probe(SpiLink& link, const Options& options, Telemetry telemetry)
 {
-    const int axis = options.probe_axis;
-    const auto initial = telemetry.position[static_cast<std::size_t>(axis)];
+    const auto initial = telemetry.position;
     Values duty{};
-    duty[static_cast<std::size_t>(axis)] = static_cast<float>(options.probe_duty);
+    for (std::size_t axis = 0; axis < duty.size(); ++axis) {
+        if ((options.probe_mask & (1U << axis)) != 0U) {
+            duty[axis] = static_cast<float>(options.probe_duty);
+        }
+    }
 
-    link.exchange(kArmCommand | (1U << axis));
+    link.exchange(kArmCommand | options.probe_mask);
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
     auto scheduled = Clock::now();
     const auto period = std::chrono::microseconds(1'000);
-    for (int frame = 0; frame < options.probe_ms && !g_stop; ++frame) {
+    for (int frame = 0; (options.probe_ms == 0 || frame < options.probe_ms) && !g_stop; ++frame) {
         telemetry = link.exchange(kDutyCommand, duty);
         scheduled = wait_next(scheduled, period);
     }
 
     link.disarm();
-    const auto delta = telemetry.position[static_cast<std::size_t>(axis)] - initial;
-    std::cout << "Probe axis " << axis << ": duty=" << options.probe_duty
-              << " start=" << initial << " end="
-              << telemetry.position[static_cast<std::size_t>(axis)]
-              << " delta=" << delta << " counts\n";
-    if (delta == 0) {
-        throw std::runtime_error("no encoder motion detected");
+    for (std::size_t axis = 0; axis < duty.size(); ++axis) {
+        if ((options.probe_mask & (1U << axis)) == 0U) continue;
+        const auto delta = telemetry.position[axis] - initial[axis];
+        std::cout << "Probe axis " << axis << ": duty=" << options.probe_duty
+                  << " start=" << initial[axis] << " end=" << telemetry.position[axis]
+                  << " delta=" << delta << " counts\n";
     }
-    const bool same_sign = (delta > 0) == (options.probe_duty > 0.0);
-    std::cout << "Observed motor sign: " << (same_sign ? "+1" : "-1") << '\n';
 }
 
 void run_sine(SpiLink& link, const Options& options, Telemetry telemetry)
@@ -521,7 +526,7 @@ int main(int argc, char** argv)
 
         SpiLink link(options.device.c_str());
         const Telemetry telemetry = get_initial_telemetry(link);
-        if (options.probe_axis >= 0) run_probe(link, options, telemetry);
+        if (options.probe_mask != 0U) run_probe(link, options, telemetry);
         else run_sine(link, options, telemetry);
         return 0;
     } catch (const std::exception& error) {
