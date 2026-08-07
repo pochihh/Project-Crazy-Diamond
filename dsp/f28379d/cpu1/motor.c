@@ -56,7 +56,7 @@ static const uint32_t kDirGpio[NUM_AXES] = { 12U, 13U, 14U, 15U, 16U, 17U };
 #define MOTOR_EN_GPIO  18U
 
 //
-// PWM period: TBPRD=10000, TBCLK=100MHz (CLKDIV=1, HSPCLKDIV=2), UP mode
+// PWM period: TBPRD=10000, TBCLK=100MHz (CLKDIV=1, HSPCLKDIV=1), UP mode
 // → fPWM = 100 MHz / 10000 = 10 kHz. The PCB pulls SLEW low through 1 kΩ.
 //
 #define PWM_TBPRD  10000U
@@ -67,7 +67,7 @@ static const uint32_t kDirGpio[NUM_AXES] = { 12U, 13U, 14U, 15U, 16U, 17U };
 static void pwm_init_one(uint32_t base)
 {
     EPWM_setEmulationMode(base, EPWM_EMULATION_FREE_RUN);
-    EPWM_setClockPrescaler(base, EPWM_CLOCK_DIVIDER_1, EPWM_HSCLOCK_DIVIDER_2);
+    EPWM_setClockPrescaler(base, EPWM_CLOCK_DIVIDER_1, EPWM_HSCLOCK_DIVIDER_1);
     EPWM_setTimeBaseCounterMode(base, EPWM_COUNTER_MODE_UP);
     EPWM_disablePhaseShiftLoad(base);
     EPWM_setTimeBaseCounter(base, 0U);
