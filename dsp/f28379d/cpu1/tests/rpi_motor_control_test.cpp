@@ -417,12 +417,15 @@ Clock::time_point wait_next(Clock::time_point scheduled,
 
 Telemetry get_initial_telemetry(SpiLink& link)
 {
-    Telemetry telemetry;
     for (int frame = 0; frame < 10; ++frame) {
-        telemetry = link.exchange(kDisarmCommand);
+        try {
+            return link.exchange(kDisarmCommand);
+        } catch (const std::runtime_error&) {
+            // The first full-duplex response after opening SPI may be stale.
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    return telemetry;
+    throw std::runtime_error("DSP telemetry did not synchronize after 10 frames");
 }
 
 void run_probe(SpiLink& link, const Options& options, Telemetry telemetry)
