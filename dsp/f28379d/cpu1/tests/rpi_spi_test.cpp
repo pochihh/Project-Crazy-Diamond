@@ -32,6 +32,17 @@ constexpr std::uint16_t kTelemetryHeader = 0xAA55;
 constexpr std::uint16_t kTelemetryVersion = 3;
 
 using Words = std::array<std::uint16_t, kFrameWords>;
+using Clock = std::chrono::steady_clock;
+
+Clock::time_point next_start(Clock::time_point scheduled_start,
+                             Clock::duration period,
+                             Clock::time_point now,
+                             bool& deadline_missed)
+{
+    scheduled_start += period;
+    deadline_missed = now > scheduled_start;
+    return deadline_missed ? now + period : scheduled_start;
+}
 
 std::uint16_t crc16_byte(std::uint16_t crc, std::uint8_t byte)
 {
@@ -176,8 +187,20 @@ bool self_test()
 
     Words command{};
     build_command(command, 0x12345678U);
-    return command[2] == 0x5678U && command[3] == 0x1234U &&
-           crc16_words(command.data(), kCommandWords - 1) == command[16];
+    if (command[2] != 0x5678U || command[3] != 0x1234U ||
+        crc16_words(command.data(), kCommandWords - 1) != command[16]) {
+        return false;
+    }
+
+    const auto epoch = Clock::time_point{};
+    const auto period = std::chrono::milliseconds(1);
+    bool missed = false;
+    if (next_start(epoch, period, epoch, missed) != epoch + period || missed) {
+        return false;
+    }
+    return next_start(epoch, period, epoch + period * 2, missed) ==
+               epoch + period * 3 &&
+           missed;
 }
 
 int transfer(int fd, std::uint32_t speed_hz, const Words& tx, Words& rx)
@@ -275,7 +298,6 @@ int main(int argc, char** argv)
         bool have_timestamp = false;
         bool dumped_invalid = false;
         std::uint32_t deadline_misses = 0;
-        using Clock = std::chrono::steady_clock;
         Clock::duration max_start_lateness{};
         Clock::duration max_transfer{};
         Clock::duration total_transfer{};
@@ -357,8 +379,10 @@ int main(int argc, char** argv)
                 }
             }
 
-            scheduled_start += period;
-            if (measured && Clock::now() > scheduled_start) {
+            bool deadline_missed = false;
+            scheduled_start = next_start(scheduled_start, period, Clock::now(),
+                                         deadline_missed);
+            if (measured && deadline_missed) {
                 ++deadline_misses;
             }
             std::this_thread::sleep_until(scheduled_start);
