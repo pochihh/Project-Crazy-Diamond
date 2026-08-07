@@ -279,6 +279,15 @@ struct Options {
     std::string device = "/dev/spidev0.0";
 };
 
+std::uint16_t sine_arm_mask(const Options& options)
+{
+    std::uint16_t mask = 0;
+    for (std::size_t axis = 0; axis < options.axis.size(); ++axis) {
+        if (options.axis[axis].amplitude > 0.0) mask |= static_cast<std::uint16_t>(1U << axis);
+    }
+    return mask;
+}
+
 double number(const char* text, const char* name)
 {
     std::size_t parsed = 0;
@@ -312,7 +321,8 @@ void usage(const char* program)
         << "    Optional overrides: --kp0 X --ki0 X --kd0 X --amp0 COUNTS"
            " --sign0 +/-1 --max-duty0 X --kp1 X --ki1 X --kd1 X"
            " --amp1 COUNTS --sign1 +/-1 --max-duty1 X"
-           " [--period SEC] [--duration SEC]\n";
+           " [--period SEC] [--duration SEC]\n"
+        << "    An amplitude of 0 disables that axis.\n";
 }
 
 Options parse_options(int argc, char** argv)
@@ -379,6 +389,9 @@ void validate(const Options& options)
             axis.max_duty <= 0.0 || axis.max_duty > 1.0) {
             throw std::invalid_argument("sine requires sign +/-1, amplitude 0-10000 counts, and 0 < max duty <= 1");
         }
+    }
+    if (sine_arm_mask(options) == 0U) {
+        throw std::invalid_argument("sine requires at least one nonzero amplitude");
     }
 }
 
@@ -450,7 +463,8 @@ void run_sine(SpiLink& link, const Options& options, Telemetry telemetry)
     };
     std::array<Pid, 2> pid = {Pid(options.axis[0]), Pid(options.axis[1])};
 
-    link.exchange(kArmCommand | 0x03U);
+    const std::uint16_t arm_mask = sine_arm_mask(options);
+    link.exchange(kArmCommand | arm_mask);
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
     Values duty{};
     auto scheduled = Clock::now();
@@ -465,6 +479,11 @@ void run_sine(SpiLink& link, const Options& options, Telemetry telemetry)
 
         std::array<double, 2> target{};
         for (std::size_t axis = 0; axis < 2; ++axis) {
+            if ((arm_mask & (1U << axis)) == 0U) {
+                target[axis] = center[axis];
+                duty[axis] = 0.0F;
+                continue;
+            }
             target[axis] = center[axis] + options.axis[axis].amplitude * sine;
             const double error = target[axis] - telemetry.position[axis];
             const double max_error = std::max(100.0, 2.0 * options.axis[axis].amplitude);
@@ -497,9 +516,14 @@ bool self_test()
     const Options defaults;
     if (defaults.axis[0].amplitude != 2000.0 ||
         defaults.axis[1].amplitude != 2000.0 ||
-        defaults.period_s != 1.0 || defaults.duration_s != 0.0) {
+        defaults.period_s != 1.0 || defaults.duration_s != 0.0 ||
+        sine_arm_mask(defaults) != 0x03U) {
         return false;
     }
+
+    Options axis0_only = defaults;
+    axis0_only.axis[1].amplitude = 0.0;
+    if (sine_arm_mask(axis0_only) != 0x01U) return false;
 
     const Words command = make_command(kDutyCommand, {0.25F, -0.25F});
     if (command[0] != kCommandHeader || command[1] != kCommandVersion ||

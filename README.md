@@ -59,6 +59,13 @@ sudo taskset -c 3 chrt -f 80 ~/.local/bin/rpi_motor_control_test \
   --enable-motors --sine --kp0 0.0006 --amp0 1500 --period 2
 ```
 
+Set one amplitude to zero to disable that axis for an isolated test:
+
+```bash
+sudo taskset -c 3 chrt -f 80 ~/.local/bin/rpi_motor_control_test \
+  --enable-motors --sine --amp1 0 --period 5
+```
+
 ## Probe H-bridge axes
 
 Use a short, unloaded pulse before running a newly wired axis:
