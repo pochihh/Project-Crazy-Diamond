@@ -1,0 +1,19 @@
+[Unit]
+Description=Crazy Diamond ROS control bridge
+After=network.target
+
+[Service]
+Type=simple
+User=toby
+WorkingDirectory=/home/toby/Project-Crazy-Diamond
+ExecStart=/bin/bash /home/toby/Project-Crazy-Diamond/scripts/run_bridge.sh false
+CPUAffinity=0 1 2
+LimitRTPRIO=90
+LimitMEMLOCK=infinity
+SupplementaryGroups=dialout
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

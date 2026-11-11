@@ -1,0 +1,8 @@
+schema_version: 1
+id: bench_pid
+type: pid
+sample_period_s: 0.0005
+parameters:
+  kp: 0.001
+  ki: 0.001
+  kd: 0.0

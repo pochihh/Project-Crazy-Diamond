@@ -1,0 +1,15 @@
+[Unit]
+Description=Crazy Diamond web control desk
+After=diamond-bridge.service
+
+[Service]
+Type=simple
+User=toby
+WorkingDirectory=/home/toby/Project-Crazy-Diamond
+ExecStart=/bin/bash /home/toby/Project-Crazy-Diamond/scripts/run_ui.sh
+CPUAffinity=0 1 2
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

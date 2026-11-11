@@ -1,12 +1,12 @@
 # DSP_28379D Development Plan
 
-> **Historical implementation record.** This file describes the currently
-> validated legacy DMA example, including its old frame, GPIO123/XINT1 boundary,
-> and earlier loop-rate assumptions. It is not the target interface. Use
-> [`electronics.md`](electronics.md) for pins and electrical decisions,
-> [`spi_protocol.md`](spi_protocol.md) for protocol v4, and
-> [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) for migration
-> gates. Preserve the tests here while replacing the obsolete interface.
+> **Historical implementation record, not current operating instructions.**
+> GPIO123/XINT1, earlier loop rates, pin maps, and completion labels below refer
+> to past experiments. Use [Current system](CURRENT_SYSTEM.md) for the active
+> firmware/protocol, [electronics](electronics.md) for hardware references, and
+> [the roadmap](IMPLEMENTATION_PLAN.md) for the agreed delivery order.
+> [SPI migration](spi_protocol.md) describes future requirements; the old v4
+> proposal was not implemented. Preserve this history as reference material.
 
 ## Overview
 

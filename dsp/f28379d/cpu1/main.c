@@ -1,236 +1,86 @@
-//#############################################################################
-//
-// FILE:   main.c
-//
-// TITLE:  Integration main — DMA SPI + CLA PID + Encoders + Motors
-//
-// DESCRIPTION:
-//   Full robot control loop:
-//     - SPI DMA slave: receives RPi commands (ref[6], cmd)
-//     - CLA PID:       runs at 5 kHz, computes u[6] from ref/pos
-//     - Encoders:      EQEP1/2/3 (CPU1) + GPIO quadrature via CPU2 IPC
-//     - ADC:           reserved channels remain disabled in this PCB profile
-//     - Motors:        6-axis H-bridge driven from CLA output
-//
-//   Control loop flow:
-//     1. main loop polls encoder state
-//     2. CPU writes gEncPos[] → gCpuToCla.pos[] before each CLA tick
-//     3. CLA Task 1 fires at 5 kHz and snapshots control telemetry
-//     4. CLA1_Task_1_ISR (PIE 11.1): applies the latest host duty command
-//        and calls SpiDma_updateTx() with latest telemetry
-//     5. SPI ARM/DUTY/DISARM commands update the staged host command
-//
-//   Safety:
-//     - If SPI duty command is not received within CMD_TIMEOUT_US, shared EN
-//       and all STBY/PWM outputs are disabled at the next 5 kHz boundary.
-//
-// BUILD:
-//   CCS RAM and FLASH configurations select the matching linker command file.
-//
-//#############################################################################
-
+/* PCD hardware endpoint: 5 kHz latest-value snapshot, host-owned controllers. */
 #include "driverlib.h"
 #include "device.h"
 #include "spi_dma.h"
-#include "cla_pid.h"
-#include "cla_setup.h"
 #include "encoders.h"
 #include "motor.h"
-#include <string.h>
-#include <stdint.h>
-#include <stdbool.h>
+#include "io.h"
+#include "ipc_layout.h"
+#include "../../common/endpoint.h"
 
-//
-// ============ Microsecond timer (CPU Timer 1) ============
-//
-static void microsTimer_init(void)
-{
+static PcdEndpoint endpoint;
+volatile uint32_t gTickCount,gMaxTickUs;
+static uint16_t applied_mask;
+#pragma CODE_SECTION(micros,".TI.ramfunc")
+static uint32_t micros(void){return 0xffffffffUL-CPUTimer_getTimerCount(CPUTIMER1_BASE);}
+#pragma CODE_SECTION(onSpiFrame,".TI.ramfunc")
+static void onSpiFrame(const RxFrame_t *c){pcd_accept(&endpoint,c,micros(),gEncoderValid);}
+#pragma CODE_SECTION(tick,".TI.ramfunc")
+__interrupt void tick(void){
+    PcdTelemetry t={0};uint16_t i;uint32_t started=micros(),duration;
+    Encoders_updatePosition(started);pcd_tick(&endpoint,started,gEncoderValid);
+    if(applied_mask!=endpoint.mask){
+        Motor_stop();if(endpoint.mask)Motor_arm(endpoint.mask);applied_mask=endpoint.mask;
+    }
+    for(i=0;i<PCD_AXES;i++){
+        t.requested_duty[i]=endpoint.command.duty[i];
+        t.duty[i]=(endpoint.mask&(1U<<i))?endpoint.command.duty[i]:0;
+        t.reference[i]=endpoint.command.reference[i];t.position[i]=gEncPos[i];t.encoder_errors+=gEncErrors[i];
+    }
+    Motor_setAllOutputs(t.duty);
+    Io_tick(&t,&endpoint.command);
+    t.timestamp_us=started;t.sequence=++gTickCount;t.session=endpoint.command.session;
+    t.command_sequence=endpoint.command.sequence;t.state=endpoint.fault?2:(endpoint.active?1:0);
+    t.arm_mask=endpoint.mask;t.fault=endpoint.fault;t.encoder_valid=gEncoderValid;
+    t.cpu2_max_poll_us=gCpu2MaxPollUs;
+    t.invalid_frames=SpiDma_getStatsPtr()->crc_errors+SpiDma_getStatsPtr()->frame_errors;
+    t.rejected_commands=endpoint.rejected;t.watchdogs=endpoint.watchdogs;
+    SpiDma_updateTx(&t);
+    duration=micros()-started;if(duration>gMaxTickUs)gMaxTickUs=duration;
+    CPUTimer_clearOverflowFlag(CPUTIMER0_BASE);
+    Interrupt_clearACKGroup(INTERRUPT_ACK_GROUP1);
+}
+static void cpu2_pins(void){
+    const uint32_t pins[6]={24,25,26,27,30,39};uint16_t i;
+    GPIO_setPinConfig(GPIO_24_GPIO24);GPIO_setPinConfig(GPIO_25_GPIO25);
+    GPIO_setPinConfig(GPIO_26_GPIO26);GPIO_setPinConfig(GPIO_27_GPIO27);
+    GPIO_setPinConfig(GPIO_30_GPIO30);GPIO_setPinConfig(GPIO_39_GPIO39);
+    for(i=0;i<6;i++){
+        GPIO_setDirectionMode(pins[i],GPIO_DIR_MODE_IN);
+        GPIO_setPadConfig(pins[i],GPIO_PIN_TYPE_STD);
+        GPIO_setQualificationPeriod(pins[i],20);
+        GPIO_setQualificationMode(pins[i],GPIO_QUAL_3SAMPLE);
+        GPIO_setMasterCore(pins[i],GPIO_CORE_CPU2);
+    }
+    *(volatile uint16_t *)0x03fc00UL=IPC_CPU2_START;
+}
+void main(void){
+#ifdef _FLASH
+    bool cpu2_boot_requested=false;
+#endif
+    Device_init();Device_initGPIO();Interrupt_initModule();Interrupt_initVectorTable();
+    Motor_init();Motor_stop();
     CPUTimer_stopTimer(CPUTIMER1_BASE);
-    CPUTimer_setPreScaler(CPUTIMER1_BASE,
-                          (uint16_t)(DEVICE_SYSCLK_FREQ / 1000000U) - 1U);
-    CPUTimer_setPeriod(CPUTIMER1_BASE, 0xFFFFFFFFU);
-    CPUTimer_reloadTimerCounter(CPUTIMER1_BASE);
+    CPUTimer_setPreScaler(CPUTIMER1_BASE,(uint16_t)(DEVICE_SYSCLK_FREQ/1000000UL)-1U);
+    CPUTimer_setPeriod(CPUTIMER1_BASE,0xffffffffUL);CPUTimer_reloadTimerCounter(CPUTIMER1_BASE);
     CPUTimer_startTimer(CPUTIMER1_BASE);
-}
-
-#pragma CODE_SECTION(micros, ".TI.ramfunc")
-static uint32_t micros(void)
-{
-    // Timer counts down directly at 1 MHz and wraps naturally at 2^32 us.
-    return 0xFFFFFFFFU - CPUTimer_getTimerCount(CPUTIMER1_BASE);
-}
-
-//
-// ============ Reserved ADC telemetry ============
-//
-static uint16_t gAdc[6] = {0};
-
-//
-// ============ SPI command handling ============
-//
-#define CMD_TIMEOUT_US      50000U   // 50 ms: zero refs if no command
-
-static volatile uint32_t gLastCmdTimeUs = 0U;
-static volatile uint16_t gRequestedArmMask = 0U;
-static volatile uint16_t gArmedMask = 0U;
-static volatile float gHostDuty[6] = {0.0f};
-
-// Called from SPI DMA CS ISR when a valid RX frame arrives
-#pragma CODE_SECTION(onSpiFrame, ".TI.ramfunc")
-static void onSpiFrame(const RxFrame_t *rx)
-{
-    uint16_t k;
-    float duty[6];
-
-    if (rx->cmd == RX_CMD_DISARM) {
-        gRequestedArmMask = 0U;
-        for (k = 0U; k < 6U; k++) gHostDuty[k] = 0.0f;
-        gLastCmdTimeUs = micros();
-        return;
-    }
-
-    if ((rx->cmd & 0xFFFFFF00UL) == RX_CMD_ARM_PREFIX) {
-        uint16_t mask = (uint16_t)(rx->cmd & 0x00FFU);
-        if ((mask & 0xFFC0U) == 0U) {
-            for (k = 0U; k < 6U; k++) gHostDuty[k] = 0.0f;
-            gRequestedArmMask = mask;
-            gLastCmdTimeUs = micros();
+    Encoders_init();cpu2_pins();Io_init();
+    SpiDma_init();SpiDma_setRxCallback(onSpiFrame);
+    CPUTimer_stopTimer(CPUTIMER0_BASE);CPUTimer_setPreScaler(CPUTIMER0_BASE,0);
+    CPUTimer_setPeriod(CPUTIMER0_BASE,DEVICE_SYSCLK_FREQ/5000UL-1U);
+    CPUTimer_reloadTimerCounter(CPUTIMER0_BASE);CPUTimer_clearOverflowFlag(CPUTIMER0_BASE);
+    Interrupt_register(INT_TIMER0,tick);Interrupt_enable(INT_TIMER0);
+    CPUTimer_enableInterrupt(CPUTIMER0_BASE);CPUTimer_startTimer(CPUTIMER0_BASE);
+    EINT;ERTM;
+    while(true){
+#ifdef _FLASH
+        // ROM readiness is asynchronous; retry without blocking CPU1's I/O tick.
+        if(!cpu2_boot_requested && gEncoderValid!=63U &&
+           (HWREG(IPC_BASE+IPC_O_BOOTSTS)&C2_BOOTROM_BOOTSTS_SYSTEM_READY)!=0 &&
+           (HWREG(IPC_BASE+IPC_O_FLG)&(IPC_FLG_IPC0|IPC_FLG_IPC31))==0){
+            Device_bootCPU2(C1C2_BROM_BOOTMODE_BOOT_FROM_FLASH);
+            cpu2_boot_requested=true;
         }
-        return;
-    }
-
-    if (rx->cmd != RX_CMD_DUTY || gRequestedArmMask == 0U) return;
-
-    for (k = 0U; k < 6U; k++) {
-        duty[k] = rx->ref[k];
-        // This comparison also rejects NaN and infinities.
-        if (!(duty[k] >= -1.0f && duty[k] <= 1.0f)) return;
-    }
-    for (k = 0U; k < 6U; k++) {
-        gHostDuty[k] = duty[k];
-    }
-    gLastCmdTimeUs = micros();
-}
-
-//
-// ============ CLA Task 1 done callback ============
-//
-// Runs from PIE 11.1 ISR after each 5 kHz CLA tick.
-// Reads gClaToCpu.u[] and drives motors.
-// Queues a fresh snapshot at 5 kHz; the SPI master streams it at 1 kHz.
-//
-#pragma CODE_SECTION(onClaTask1Done, ".TI.ramfunc")
-static void onClaTask1Done(void)
-{
-    uint16_t k;
-    float u[6];
-    uint16_t requested_mask = gRequestedArmMask;
-
-    if (requested_mask != 0U &&
-        (micros() - gLastCmdTimeUs) > CMD_TIMEOUT_US) {
-        requested_mask = 0U;
-        gRequestedArmMask = 0U;
-        for (k = 0U; k < 6U; k++) gHostDuty[k] = 0.0f;
-    }
-
-    if (requested_mask != gArmedMask) {
-        Motor_stop();
-        if (requested_mask != 0U) Motor_arm(requested_mask);
-        gArmedMask = requested_mask;
-    }
-
-    for (k = 0U; k < 6U; k++) {
-        u[k] = (gArmedMask & (uint16_t)(1U << k)) ? gHostDuty[k] : 0.0f;
-    }
-
-    if (gArmedMask != 0U) Motor_setAllOutputs(u);
-
-    // Queue next SPI TX frame with latest telemetry
-    TxFrame_t tx;
-    tx.timestamp_us = micros();
-    tx.err_bitmap   = gClaToCpu.err_flags;
-    tx.err_count    = (uint16_t)(gClaToCpu.cycle_count & 0xFFFFU);
-
-    for (k = 0U; k < 6U; k++) {
-        tx.ref[k] = gHostDuty[k];
-        tx.pos[k] = gEncPos[k];
-        tx.u[k]   = u[k];
-        tx.adc[k] = gAdc[k];
-    }
-
-    // IMU quaternion placeholder (zeros until IMU driver added)
-    tx.quat[0] = 1.0f; tx.quat[1] = 0.0f;
-    tx.quat[2] = 0.0f; tx.quat[3] = 0.0f;
-
-    SpiDma_updateTx(&tx);
-}
-
-//
-// ============ main ============
-//
-void main(void)
-{
-    uint16_t k;
-
-    // --- System init ---
-    Device_init();
-    Device_initGPIO();
-    Interrupt_initModule();
-    Interrupt_initVectorTable();
-
-    // --- Peripheral init ---
-    microsTimer_init();
-    Encoders_init();
-    Motor_init();
-    Motor_stop();
-
-    // --- SPI DMA slave ---
-    SpiDma_init();
-    SpiDma_setRxCallback(&onSpiFrame);
-
-    // --- CLA PID ---
-    CLA_setTask1DoneCallback(&onClaTask1Done);
-    CLA_setup(CLA_CONTROL_RATE_HZ);
-
-    // Set default gains after CLA_setup() initializes its shared memory.
-    for (k = 0U; k < 6U; k++) {
-        CLA_setGains(k,
-                     0.1f,   // kp
-                     0.0f,   // ki
-                     0.0f,   // kd
-                     1.0f,   // u_max
-                     (float)CLA_CONTROL_RATE_HZ);
-    }
-
-    // Prime initial state
-    for (k = 0U; k < 6U; k++) {
-        gCpuToCla.ref[k] = 0.0f;
-        gCpuToCla.pos[k] = 0;
-    }
-    CLA_resetIntegrators(0xFFU);
-
-    gLastCmdTimeUs = micros();
-
-    EINT;
-    ERTM;
-
-    // --- Main loop ---
-    // Runs as fast as possible. CLA tick is independently triggered by Timer 0.
-    //
-    while (true) {
-        // Update encoder positions → write to CLA input message RAM
-        Encoders_updatePosition();
-        for (k = 0U; k < 6U; k++) {
-            gCpuToCla.pos[k] = gEncPos[k];
-        }
-
-        // LED heartbeat: blink LED1 at ~2 Hz using CLA cycle count
-        // (LED2 is driven by SPI DMA on each valid frame)
-        static uint32_t led_last_count = 0U;
-        uint32_t cyc = gClaToCpu.cycle_count;
-        if ((cyc - led_last_count) >= 500U) {   // every 500 CLA ticks = 0.5 s
-            led_last_count = cyc;
-            GPIO_togglePin(DEVICE_GPIO_PIN_LED1);
-        }
+#endif
     }
 }

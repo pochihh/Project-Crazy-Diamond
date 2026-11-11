@@ -16,8 +16,8 @@
 //     Axis 5: CPU2 GPIO quadrature (via IPC shared RAM)
 //
 //   Axes 3-5 require a companion CPU2 project that reads GPIO quadrature
-//   signals via interrupt and writes counts to CPU2TOCPU1RAM. If CPU2 is
-//   not running, those axes report the last known values.
+//   signals by continuous polling and writes counts to CPU2TOCPU1RAM. If CPU2 is
+//   not running, those axes retain counts but lose their validity bits.
 //
 //   EQEP pins (must match hardware):
 //     EQEP1: A=GPIO20, B=GPIO21, I=GPIO23 (optional)
@@ -45,11 +45,7 @@ extern "C" {
 // CPU1 reads it here. Struct must match CPU2 project definition.
 // Declared as DSECT in the linker — CPU1 reads only.
 //
-typedef struct {
-    int32_t  enc_pos[3];     // encoder positions for axes 3, 4, 5 (counts)
-    uint32_t err_count[3];   // error counts for axes 3, 4, 5
-    uint32_t heartbeat;      // CPU2 heartbeat (increments ~1kHz)
-} Cpu2EncoderData_t;
+
 
 // CPU2 IPC data is accessed internally via a fixed hardware address pointer.
 // CPU2 project must write its encoder data to CPU2TOCPU1RAM starting at 0x03F800.
@@ -58,7 +54,7 @@ typedef struct {
 // ============ Encoder position and error state ============
 //
 // CPU1 encoder positions (axes 0-2), updated by Encoders_updatePosition().
-// Axes 3-5 are read from gCpu2EncoderData in Encoders_updatePosition().
+// Axes 3-5 are read from CPU2 message RAM in Encoders_updatePosition().
 //
 extern volatile int32_t  gEncPos[6];      // positions [counts]
 extern volatile uint32_t gEncErrors[6];   // cumulative error counts
@@ -84,7 +80,8 @@ void Encoders_init(void);
 // Read EQEP positions into gEncPos[0..2] and copy gCpu2EncoderData into
 // gEncPos[3..5]. Also logs and counts EQEP error flags.
 // Call frequently from the main loop (typically every ~1 ms or faster).
-void Encoders_updatePosition(void);
+void Encoders_updatePosition(uint32_t now_us);
+extern volatile uint16_t gEncoderValid, gCpu2MaxPollUs;
 
 // Zero all encoder positions (EQEP + CPU2 IPC offset).
 void Encoders_zeroPosition(void);

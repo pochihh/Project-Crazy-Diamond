@@ -58,8 +58,8 @@ PAGE 1 :
    RAMGS6      : origin = 0x012000, length = 0x001000
    RAMGS7      : origin = 0x013000, length = 0x001000
    RAMGS8      : origin = 0x014000, length = 0x001000
-   RAMGS9_DMA  : origin = 0x015000, length = 0x000200     /* DMA buffers (512 bytes = 256 words) */
-   RAMGS9      : origin = 0x015200, length = 0x000E00     /* Remaining RAMGS9 */
+   RAMGS9_DMA  : origin = 0x015000, length = 0x000400     /* DMA buffers (512 bytes = 256 words) */
+   RAMGS9      : origin = 0x015400, length = 0x000C00     /* Remaining RAMGS9 */
    /* RAMGS10-12 moved to PAGE 0 for code overflow */
    RAMGS13     : origin = 0x019000, length = 0x001000     /* F28379D only */
    RAMGS14     : origin = 0x01A000, length = 0x001000     /* F28379D only */

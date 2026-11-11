@@ -1,0 +1,10 @@
+{
+  "id": "heart_phantom",
+  "name": "Heart Phantom",
+  "description": "Two-axis motion platform",
+  "model_status": "Robot model / kinematics to follow",
+  "axes": [
+    {"name": "Axis 0", "description": "Linear actuator · rack & pinion", "encoder": "eQEP1", "motor": "DC motor 0"},
+    {"name": "Axis 1", "description": "Linear actuator · rack & pinion", "encoder": "eQEP2", "motor": "DC motor 1"}
+  ]
+}

@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>bridge</name><version>0.1.0</version>
+  <description>Two-axis real-time bridge using the proven DSP firmware.</description>
+  <maintainer email="toby@example.com">Toby</maintainer><license>UNLICENSED</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend><depend>interfaces</depend><depend>sensor_msgs</depend>
+  <depend>yaml_cpp_vendor</depend><depend>yaml-cpp</depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

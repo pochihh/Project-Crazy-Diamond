@@ -40,8 +40,8 @@ PAGE 1 :
    RAMGS6           : origin = 0x012000, length = 0x001000
    RAMGS7           : origin = 0x013000, length = 0x001000
    RAMGS8           : origin = 0x014000, length = 0x001000
-   RAMGS9_DMA       : origin = 0x015000, length = 0x000200
-   RAMGS9           : origin = 0x015200, length = 0x000E00
+   RAMGS9_DMA       : origin = 0x015000, length = 0x000400
+   RAMGS9           : origin = 0x015400, length = 0x000C00
    RAMGS10          : origin = 0x016000, length = 0x001000
    RAMGS11          : origin = 0x017000, length = 0x001000
    RAMGS12          : origin = 0x018000, length = 0x001000

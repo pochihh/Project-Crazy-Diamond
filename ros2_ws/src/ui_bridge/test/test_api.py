@@ -1,0 +1,120 @@
+from types import SimpleNamespace
+from fastapi.testclient import TestClient
+from ui_bridge.app import create_app
+from ui_bridge.app import RosClient
+from interfaces.msg import BridgeState
+
+
+class FakeRos:
+    state = {}
+    client = SimpleNamespace(service_is_ready=lambda: False)
+    catalog_client = SimpleNamespace(service_is_ready=lambda: False)
+
+    def snapshot(self):
+        return dict(self.state, bridge_alive=False)
+
+
+def test_snapshots_order_http_and_websocket_without_changing_control_frames():
+    ros = SimpleNamespace(sequence=0, instance='ui-process', state={}, received=0)
+    message = BridgeState()
+    message.sample_count = 100
+    RosClient.update(ros, message)
+    first = RosClient.snapshot(ros)
+    message.sample_count = 1  # Host-controller restart still advances the UI sequence.
+    RosClient.update(ros, message)
+    second = RosClient.snapshot(ros)
+    assert first['ui_instance'] == second['ui_instance'] == 'ui-process'
+    assert first['ui_sequence'] == 1 and second['ui_sequence'] == 2
+    assert first['sample_count'] == 100 and second['sample_count'] == 1
+    assert second['bridge_alive']
+
+
+def test_offline_commands_and_input_bounds(tmp_path):
+    client = TestClient(create_app(FakeRos(), tmp_path, tmp_path / 'missing-ui'))
+    assert client.get('/api/state').json()['bridge_alive'] is False
+    assert client.get('/api/controllers').status_code == 503
+    assert client.post('/api/command', content='{"operation":"controller_apply","parameters":{"kp":1e999}}',
+                       headers={'Content-Type':'application/json'}).status_code == 422
+    assert client.post('/api/command', json={'operation': 'system', 'enabled': True}).status_code == 503
+    assert client.post('/api/command', json={'operation': 'zero', 'axis': 2}).status_code == 422
+    assert client.post('/api/command', json={'operation': 'digital', 'axis': 3}).status_code == 503
+    assert client.post('/api/command', json={'operation': 'digital', 'axis': 4}).status_code == 422
+    assert client.post('/api/command', json={'operation': 'analog', 'axis': 2}).status_code == 422
+    assert client.post('/api/command', content='{"operation":"target","value":1e999}',
+                       headers={'Content-Type': 'application/json'}).status_code == 422
+
+
+def test_recording_download_contract(tmp_path):
+    ros = FakeRos()
+    ros.state = {'recording': True, 'recording_file': 'session-test.csv'}
+    (tmp_path / 'session-test.csv').write_text('timestamp_us,position\n1,0\n')
+    client = TestClient(create_app(ros, tmp_path, tmp_path / 'missing-ui'))
+    assert client.get('/api/recordings').json()[0]['active'] is True
+    assert client.get('/api/recordings/session-test.csv').status_code == 409
+    ros.state['recording'] = False
+    response = client.get('/api/recordings/session-test.csv')
+    assert response.status_code == 200 and response.text.startswith('timestamp_us')
+    assert client.get('/api/recordings/config.yaml').status_code == 404
+    assert client.get('/api/recordings/session-missing.csv').status_code == 404
+
+
+class TopicRos(FakeRos):
+    destroyed = False
+
+    def get_node_names(self):
+        return ['bridge', 'ui_bridge']
+
+    def get_topic_names_and_types(self):
+        return [('/bridge/state', ['interfaces/msg/BridgeState'])]
+
+    def create_subscription(self, message_type, topic, callback, qos):
+        assert message_type is BridgeState and topic == '/bridge/state' and qos.depth == 1
+        message = BridgeState()
+        message.sample_count = 123
+        callback(message)
+        return 'subscription'
+
+    def destroy_subscription(self, subscription):
+        assert subscription == 'subscription'
+        self.destroyed = True
+
+
+def test_project_status_and_topic_stream_cleanup(tmp_path):
+    ros = TopicRos()
+    project = {'id': 'test', 'name': 'Test robot', 'axes': [{'name': 'X'}, {'name': 'Y'}]}
+    with TestClient(create_app(ros, tmp_path, tmp_path / 'missing-ui', project)) as client:
+        assert client.get('/api/project').json() == project
+        with client.websocket_connect('/ws?hz=10') as socket:
+            assert socket.receive_json()['bridge_alive'] is False
+        info = client.get('/api/system').json()
+        assert info['nodes'] == ['bridge', 'ui_bridge'] and 'disk' in info['usage']
+        with client.websocket_connect('/ws/topics?name=/bridge/state') as socket:
+            data = socket.receive_json()
+            assert data['data']['sample_count'] == 123 and data['count'] == 1
+        with client.websocket_connect('/ws/topics?name=/missing') as socket:
+            assert 'error' in socket.receive_json()
+    assert ros.destroyed
+
+
+def test_invalid_stream_rate_and_project_selection(tmp_path, monkeypatch):
+    import json
+    import pytest
+    from starlette.websockets import WebSocketDisconnect
+    from ui_bridge.app import load_project
+    client = TestClient(create_app(FakeRos(), tmp_path, tmp_path / 'missing-ui'))
+    for rate in ('0', '1000', 'bad'):
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect('/ws?hz=' + rate):
+                pass
+    monkeypatch.setenv('DIAMOND_PROJECT', '../elsewhere')
+    with pytest.raises(ValueError):
+        load_project(tmp_path)
+    monkeypatch.setenv('DIAMOND_PROJECT', 'test')
+    project = tmp_path / 'projects' / 'test'
+    project.mkdir(parents=True)
+    manifest = {'id': 'test', 'axes': [{}, {}]}
+    (project / 'project.json').write_text(json.dumps(manifest))
+    assert load_project(tmp_path) == manifest
+    (project / 'project.json').write_text('{"id":"other","axes":[]}')
+    with pytest.raises(ValueError):
+        load_project(tmp_path)

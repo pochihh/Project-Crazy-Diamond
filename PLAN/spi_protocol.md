@@ -1,362 +1,132 @@
-# SPI DMA Protocol v4
+# SPI protocol v5
 
-Status: proposed wire contract; freeze after host/DSP golden-vector and logic-analyzer tests.
+Updated: 2026-11-10. Implemented contract; hardware acceptance is recorded in
+[stage-3 results](STAGE3_RESULTS.md). This replaces command v2 / telemetry v3.
+The unimplemented v4 proposal and DSP A/B controllers are superseded.
 
-Last updated: 2026-08-05
+## Ownership and timing
 
-This is the authoritative cyclic protocol between a Raspberry Pi 5 master and a
-TMS320F28379D SPIA slave. It replaces the incompatible v2/v3 frame definitions
-currently present in the DSP firmware.
+The Pi runs controllers and sends normalized motor duty. The DSP applies duty,
+reads six encoders and general I/O, and enforces command validity, encoder
+availability and timeout protection. Host reference counts are echoed for
+recording; they are **not DSP position setpoints**. No DSP controller tuning,
+homing, FOC, quaternion or auxiliary-encoder command exists in this build.
 
-## 1. Transport contract
+Pi: `/dev/spidev0.0`, Linux mode 1, 16-bit words, 10 MHz, 2 kHz target.
+DSP: `SPI_PROT_POL1PHA1`, SPIA GPIO58/59/60/61; GPIO40 mirrors CE for XINT5.
+The existing working mode pair is preserved. Each full-duplex transaction clocks
+96 words / 192 bytes, nominally 153.6 µs before host/controller overhead.
+CPU1 assembles a snapshot at 5 kHz. CPU2 publishes its newest three counts at 5 kHz.
 
-| Property | Value |
+One frame timestamp describes the latest available collection. ADC conversion
+runs between CPU1 ticks; CPU2 counts come from a coherent double buffer. This is
+not simultaneous physical sampling. There are no per-channel timestamps.
+Telemetry was prepared before the command in that transaction arrived; use the
+acknowledged command sequence rather than assuming zero-latency application.
+
+## Encoding
+
+Source of truth: [shared codec](../dsp/common/protocol.h),
+[endpoint state machine](../dsp/common/endpoint.h),
+[Pi transport](../dsp/host/spi.hpp), [SPI driver](../dsp/f28379d/cpu1/spi_dma.c).
+No packed C structs cross the wire; C28x has 16-bit addressable characters.
+
+- Each word is transmitted MSB first; 32-bit values use low word, then high word.
+- Signed counts are two's-complement int32; duty is IEEE-754 binary32, −1 to +1.
+- CRC-16/CCITT-FALSE: polynomial 0x1021, initial 0xFFFF, no reflection/XOR-out.
+  Feed each word's high byte before its low byte.
+- Reserved command words must be zero. Length/version/CRC must match exactly.
+- Telemetry has four leading padding words; host accepts a shifted header only
+  when the complete versioned payload and CRC fit inside the transaction.
+
+### Pi → DSP
+
+| Word(s) | Value |
 |---|---|
-| Master / slave | Raspberry Pi master; DSP SPIA slave |
-| DSP snapshot/control rate | 5,000 ticks/s, independent of SPI transactions |
-| Transaction rate | 1,000 transactions/s baseline, initiated by the Pi; a later one-DSP 5,000 transactions/s mode uses the same frame after timing validation |
-| Clock | 10 MHz target |
-| SPI mode | Mode 3 (`CPOL=1`, `CPHA=1`), matching C2000 `SPI_PROT_POL1PHA1`; verify on both ends before freeze |
-| Chip select | Active-low CE0; also mirrored to DSP GPIO40 for frame boundaries |
-| Frame size | Exactly 80 × 16-bit words (160 bytes) in each direction |
-| Bit order | Most-significant bit first within every 16-bit word |
-| 32-bit word order | Low 16-bit word first, then high 16-bit word |
-| Float format | IEEE-754 binary32 bit pattern, split low word then high word |
-| Unused fields | Transmit as zero; receiver ignores only fields marked reserved |
-| CRC | CRC-16/CCITT-FALSE over specified 16-bit words |
+| 0 | Header 0x55AA |
+| 1 | Version 5 |
+| 2 | Total words 96 |
+| 3 | DISARM=0, ARM=1, CYCLE=2, CLEAR=3, SYNC=4 |
+| 4–5 | Nonzero host session ID |
+| 6–7 | Command sequence |
+| 8 | Motor arm mask, bits 0–5 |
+| 9 | Four digital output bits |
+| 10–11 | Two DAC codes, each 0–4095 |
+| 12–23 | Six requested motor duties |
+| 24–35 | Six host reference counts, echoed only |
+| 36–94 | Reserved zero |
+| 95 | CRC over words 0–94 |
 
-At 10 MHz, one 1,280-bit transaction takes 128 µs. This is 12.8% of the baseline
-1 ms stream period and 64% of a 200 µs period at 5 kHz. The Pi, as master,
-chooses the transaction cadence, but 5 kHz leaves only 72 µs for DSP DMA re-arm,
-host scheduling jitter, and other link overhead. It is therefore a measured
-later operating mode, not a first-pass guarantee; a validated 20 MHz clock would
-reduce wire time to 64 µs if more margin is required. The first four
-DSP-to-Pi words are pipeline padding until an on-hardware test proves they can
-be removed; v4 keeps them so both frame sizes remain fixed.
+### DSP → Pi (nominal buffer offsets)
 
-CRC parameters:
-
-- Polynomial `0x1021`
-- Initial value `0xFFFF`
-- `RefIn=false`, `RefOut=false`
-- Final XOR `0x0000`
-- Feed each 16-bit word's high byte, then low byte
-
-## 2. Timing and ownership
-
-```text
-DSP, every 200 µs    snapshot ── CLA control ── apply PWM
-Pi, every 1 ms       CS low ── clocks 80 words ── CS high   (baseline)
-DSP SPI/DMA          already armed              validate/swap/re-arm
-DSP command          apply at next 200 µs control boundary
-DSP telemetry        latest coherent completed 5 kHz snapshot prepared for TX
-```
-
-Only the Pi starts transactions. A command becomes eligible at the next DSP
-control boundary after its frame passes size, header, version, target-ID,
-sequence, payload, and CRC validation. Telemetry is a coherent snapshot, not a
-mixture of fields from different control ticks.
-
-The command watchdog expires 50 ms after the last fully valid frame. A frame
-with bad CRC, length, version, target ID, or sequence does not refresh it.
-
-## 3. Common values
-
-### 3.1 Command types
-
-| Value | Name | Purpose |
-|---:|---|---|
-| `0x0001` | `CONTROL` | Cyclic mode and setpoint command |
-| `0x0002` | `SET_RAW_AXIS_LIMITS` | Configure one axis in DSP-native units |
-| `0x0003` | `SET_CONTROLLER_COEFFICIENTS` | Stage the A/B pair for one position or velocity controller |
-| `0x0004` | `RESET_CONTROLLER_STATE` | Clear integrator/filter history |
-| `0x0005` | `ARM` | Request transition from disarmed to armed |
-| `0x0006` | `DISARM` | Request the safe disarmed state |
-| `0x0007` | `CLEAR_FAULT` | Clear latched software faults when safe |
-| `0x0008` | `ZERO_ENCODER` | Set selected native encoder counts to zero while disarmed |
-| `0x0009` | `IDENTIFY` | Request an immediate status response for discovery/testing |
-| `0x000A` | `COMMIT_CONFIGURATION` | Atomically activate a complete staged configuration revision |
-| `0x000B` | `SET_AUX_ENCODER_CONFIG` | Configure one CPU2 encoder-only sensor in DSP-native units |
-| `0x000C` | `SET_HOMING_CONFIG` | Stage one axis's raw-unit homing parameters |
-| `0x000D` | `START_HOMING` | Start the configured one-axis homing sequence |
-| `0x000E` | `ABORT_HOMING` | Abort homing and disarm all outputs |
-| `0x000F` | `SOFTWARE_ESTOP` | Latch PWM zero, all STBY low, and shared EN low |
-
-Value zero and all unlisted values are invalid in v4.
-
-### 3.2 Axis modes
-
-| 2-bit value | Mode | Setpoint representation |
-|---:|---|---|
-| 0 | `DISABLED` | ignored |
-| 1 | `POSITION` | signed 32-bit encoder counts |
-| 2 | `VELOCITY` | IEEE-754 float counts/second |
-| 3 | `DUTY` | IEEE-754 float normalized to `[-1.0, +1.0]` |
-
-### 3.3 Result codes
-
-| Value | Name |
-|---:|---|
-| 0 | `OK` |
-| 1 | `ERR_UNSUPPORTED_TYPE` |
-| 2 | `ERR_INVALID_PAYLOAD` |
-| 3 | `ERR_INVALID_STATE` |
-| 4 | `ERR_OUT_OF_RANGE` |
-| 5 | `ERR_STALE_SEQUENCE` |
-| 6 | `ERR_CONFIG_REVISION` |
-| 7 | `ERR_INTERNAL` |
-| 8 | `ERR_INCOMPLETE_CONFIG` |
-
-Header, length, version, target-ID, and CRC failures are counted but do not
-produce a command acknowledgement because their sequence cannot be trusted.
-
-### 3.4 Safety states
-
-| Value | State |
-|---:|---|
-| 0 | `BOOT` |
-| 1 | `DISARMED` |
-| 2 | `ARMED` |
-| 3 | `FAULT` |
-| 4 | `HOMING` |
-| 5 | `ESTOP` |
-
-## 4. Pi-to-DSP frame
-
-| Word(s) | Type | Field |
-|---:|---|---|
-| 0 | `uint16` | Header `0x55AA` |
-| 1 | `uint16` | Protocol version `4` |
-| 2–3 | `uint32` | Target device ID |
-| 4–5 | `uint32` | Command sequence |
-| 6 | `uint16` | Command type |
-| 7 | `uint16` | Common flags; bit 0 = acknowledgement requested, others zero |
-| 8–78 | 71 words | Type-specific payload; all unused words zero |
-| 79 | `uint16` | CRC over words 0–78 |
-
-The target device ID prevents applying a frame intended for a different DSP.
-Command sequences increase modulo `2^32`; a repeated or older sequence is
-rejected except after a DSP boot/session reset.
-
-### 4.1 `CONTROL`
-
-| Payload word(s) | Field |
-|---:|---|
-| 8 | Axis-enable mask; bits 0–5 correspond to axes 0–5 |
-| 9 | Six packed 2-bit axis modes; axis 0 begins at bit 0 |
-| 10–11 | Reserved, zero |
-| 12–23 | Six 32-bit setpoints, axes 0–5 |
-| 24–78 | Reserved, zero |
-
-Interpret each setpoint according to its packed axis mode. A mode transition is
-accepted only through a valid `CONTROL` frame and resets that axis controller
-state before the new command is applied. An axis is enabled only when its mask
-bit is set and its mode is not `DISABLED`. Enabling an axis outside the mask
-accepted by the most recent `ARM` is rejected.
-
-`ARM` itself never applies an earlier setpoint. Outputs remain disabled until a
-valid `CONTROL` sequence newer than the accepted `ARM` arrives.
-
-### 4.2 `SET_RAW_AXIS_LIMITS`
-
-| Payload word(s) | Type | Field |
-|---:|---|---|
-| 8 | `uint16` | Axis index 0–5 |
-| 9 | `int16` | Motor polarity, exactly `-1` or `+1` |
-| 10 | — | Reserved, zero; current feedback is disabled in this PCB profile |
-| 11 | — | Reserved, zero |
-| 12–13 | `int32` | Minimum native position count |
-| 14–15 | `int32` | Maximum native position count |
-| 16–17 | `float32` | Maximum absolute count rate |
-| 18–19 | `float32` | Maximum absolute normalized duty |
-| 20–21 | — | Reserved, zero |
-| 22 | `uint16` | Proposed configuration revision |
-| 23–78 | — | Reserved, zero |
-
-The DSP accepts this command only while disarmed. It validates finite values,
-ordered position limits, positive velocity, and duty in `(0, 1]`, then stores
-the block in the named staging revision. The active
-configuration does not change until `COMMIT_CONFIGURATION` succeeds.
-
-### 4.3 `SET_CONTROLLER_COEFFICIENTS`
-
-| Payload word(s) | Type | Field |
-|---:|---|---|
-| 8 | `uint16` | Axis index 0–5 |
-| 9 | `uint16` | Controller: 1 = position, 2 = velocity |
-| 10 | `uint16` | Proposed configuration revision |
-| 11–44 | 17 `float32` | Denominator `A[0]` through `A[16]` |
-| 45–78 | 17 `float32` | Numerator `B[0]` through `B[16]` |
-
-`NA = NB = 16`; each fixed array contains 17 coefficients. A shorter controller
-is zero-padded by the host. Every coefficient must be finite, and `A[0]` must
-equal `1.0`. The coefficients are discrete-time coefficients for the fixed
-5 kHz controller sample rate. Commands are accepted only while disarmed and
-stored in the named staging revision; they do not become active before commit.
-A successful commit resets the affected controller state.
-
-### 4.4 `SET_AUX_ENCODER_CONFIG`
-
-| Payload word(s) | Type | Field |
-|---:|---|---|
-| 8 | `uint16` | Auxiliary sensor index 0–3 |
-| 9 | `uint16` | Enabled: exactly 0 or 1 |
-| 10 | `int16` | Count direction, exactly `-1` or `+1` |
-| 11 | `uint16` | Decoder multiplier, exactly 2 for the CPU2 A-edge decoder |
-| 12–13 | `uint32` | Maximum interrupt-event rate in events/second |
-| 14 | `uint16` | Proposed configuration revision |
-| 15–78 | — | Reserved, zero |
-
-The DSP accepts this command only while disarmed. An enabled sensor requires a
-positive event-rate limit no greater than the measured per-sensor and aggregate
-CPU2 budget. Encoder cycles/revolution and public-unit conversion remain on the
-Pi; the DSP stores only native counts, direction, enable, and the raw rate guard.
-
-### 4.5 Remaining commands
-
-`SET_HOMING_CONFIG` uses:
-
-| Payload word(s) | Type | Field |
-|---:|---|---|
-| 8 | `uint16` | Axis index 0–5 |
-| 9 | `int16` | Seek direction, exactly `-1` or `+1` |
-| 10–11 | `float32` | Positive seek speed in counts/second |
-| 12–13 | `float32` | Positive slow-reapproach speed in counts/second |
-| 14–15 | `uint32` | Backoff distance in counts |
-| 16–17 | `uint32` | Maximum total travel in counts |
-| 18–19 | `uint32` | Timeout in milliseconds |
-| 20 | `uint16` | Proposed configuration revision |
-| 21–78 | — | Reserved, zero |
-
-It is accepted only while disarmed. Values must be finite/positive where
-applicable and bounded by the axis's raw velocity/travel limits.
-
-| Type | Payload |
+| Word(s) | Value |
 |---|---|
-| `RESET_CONTROLLER_STATE` | Word 8 axis mask; remaining words zero |
-| `ARM` | Word 8 desired axis-enable mask; word 9 expected active configuration revision |
-| `DISARM` | No payload |
-| `CLEAR_FAULT` | Word 8 axis mask, or zero for all clearable faults |
-| `ZERO_ENCODER` | Word 8 mask: bits 0–5 motor axes and bits 8–11 auxiliary sensors; valid only while disarmed |
-| `IDENTIFY` | No payload |
-| `COMMIT_CONFIGURATION` | Word 8 proposed revision; word 9 axis-present mask; word 10 auxiliary-enabled mask; remaining words zero |
-| `START_HOMING` | Word 8 axis index 0–5; remaining words zero |
-| `ABORT_HOMING` | No payload |
-| `SOFTWARE_ESTOP` | No payload; accepted from any state after target-ID/CRC validation and latches `ESTOP` |
+| 0–3 | 0xFFFF pipeline padding |
+| 4–6 | Header 0xAA55, version 5, total words 96 |
+| 7–9 | Device 0x2837, firmware 0x0100, capabilities 0x000F (duty/encoder/DIO/AIO) |
+| 10–11 | Snapshot timestamp, uint32 microseconds |
+| 12–13 | Snapshot sequence, incremented at 5 kHz |
+| 14–15 | Current host session |
+| 16–17 | Last accepted command sequence |
+| 18 | State: disarmed=0, active=1, fault=2 |
+| 19–21 | Applied motor arm mask, fault bits, encoder-valid bits |
+| 22–25 | Digital inputs, digital outputs, AI-valid bits, AO-valid bits |
+| 26–31 | Six raw ADC results, 0–4095 |
+| 32–33 | Two commanded DAC codes, 0–4095 |
+| 34–45 | Six encoder counts |
+| 46–57 | Six requested duty values |
+| 58–69 | Six applied software duty commands |
+| 70–81 | Six echoed host reference counts |
+| 82–83 | Invalid frame count |
+| 84–85 | Rejected command count |
+| 86–87 | Watchdog trip count |
+| 88–89 | Sum of encoder transition/error counters |
+| 90 | Fixed wiring configuration ID 1 |
+| 91 | CPU2 maximum observed polling gap, rounded up to microseconds |
+| 92 | CRC over words 4–91 |
+| 93–95 | Zero padding |
 
-The raw-limit block, homing block, and both complete controller blocks (position A/B and
-velocity A/B) for every bit in the axis-present mask must already exist in the same
-staging revision. An auxiliary config block must exist for every bit in the
-auxiliary-enabled mask. Commit validates the whole set and swaps it at one 5 kHz
-control boundary while disarmed; an incomplete set is rejected and leaves the
-previous active revision untouched. Axes and sensors outside their masks are
-disabled. Arm is rejected if configuration is invalid, the expected active
-revision does not match, or a software/decoder/control fault is latched.
+Duty and DAC fields are software commands, not measured voltage/current/torque.
+Encoder validity indicates a functioning acquisition path, not proof that an
+external encoder is plugged in. ADC validity indicates a completed acquisition,
+not a calibrated voltage or verified external connection.
 
-Homing is accepted only while disarmed and runs one axis at a time. If its
-active-low switch is already active, the axis first moves away. It then seeks,
-backs off until release, reapproaches slowly, latches the raw zero/offset, and
-returns to disarmed. Timeout, maximum travel, watchdog, abort, or software
-E-stop forces PWM zero, all STBY low, and shared EN low. Homing completion never
-arms the normal controller.
+## State and recovery
 
-## 5. DSP-to-Pi telemetry frame
+- Boot: motor PWM zero, all STBY low, shared EN low, DO low, DAC code zero.
+- SYNC establishes a new host session and always removes drive/output commands.
+  It does not clear a fault. Same-session sequences must advance; a replayed
+  SYNC cannot rewind the sequence anchor.
+- ARM accepts only available motor encoders, clears all duties and I/O outputs,
+  and enables cyclic output updates. Mask zero permits I/O-only operation.
+- CYCLE requires the current session, advancing sequence, active state and the
+  same arm mask. Changing selected axes requires another ARM.
+- DISARM removes outputs even with a stale/foreign session. Such a command is
+  not acknowledged as accepted unless session/sequence validation succeeds.
+- CLEAR requires disarmed state; it clears the fault and leaves outputs off.
+- More than 50 ms without an accepted update while active latches timeout bit 0.
+  Duplicate, invalid and foreign-session commands do not refresh the watchdog.
+- Invalid command semantics/non-finite duty latch bit 1. Loss of availability
+  for an armed encoder latches bit 2. All faults zero motor/DO/DAC outputs.
+- CRC/version/length errors are rejected without changing outputs or refreshing
+  the watchdog. Commands have to recover before the watchdog expires.
+- Timestamp and sequence comparisons use modular 32-bit arithmetic.
 
-| Word(s) | Type | Field |
-|---:|---|---|
-| 0–3 | — | Pipeline padding, transmitted as zero |
-| 4 | `uint16` | Header `0xAA55` |
-| 5 | `uint16` | Protocol version `4` |
-| 6–7 | `uint32` | Device ID |
-| 8–9 | `uint32` | DSP timestamp in microseconds, modulo `2^32` |
-| 10–11 | `uint32` | Telemetry sequence |
-| 12–13 | `uint32` | Last processed command sequence / acknowledgement sequence |
-| 14 | `uint16` | Result code for that command |
-| 15 | `uint16` | Safety state |
-| 16 | `uint16` | Six packed 2-bit active modes |
-| 17 | `uint16` | Active axis-enable mask |
-| 18–19 | `uint32` | Fault bitmap |
-| 20 | `uint16` | Active configuration revision |
-| 21–32 | six `int32` | Native positions, axes 0–5 |
-| 33–44 | six `float32` | Native count rates, axes 0–5 |
-| 45–50 | six `int16` | Applied duty in signed Q1.15, axes 0–5 |
-| 51–56 | six `uint16` | Reserved future current ADC samples; zero while disabled |
-| 57–60 | four `uint16` | Reserved auxiliary ADC samples; zero while disabled |
-| 61–68 | four `int32` | Native auxiliary encoder positions, sensors 0–3 |
-| 69–76 | four `float32` | Native auxiliary encoder count rates, sensors 0–3 |
-| 77 | `uint16` | Invalid-frame/CRC counter, saturating |
-| 78 | `uint16` | Control/SPI/CPU2 deadline-or-overrun counter, saturating |
-| 79 | `uint16` | CRC over words 4–78 |
+The host starts disarmed, checks advancing telemetry and command acknowledgments,
+and stops on telemetry/controller/active motor deadline faults. Browser loss
+continues to hold the last target under the accepted policy; host loss is handled
+by the DSP watchdog. Reset zero is a host offset change on a disabled axis.
+Automatic homing and limit-input roles remain deferred; general DI is not yet a
+local limit-protection implementation. The physical E-stop remains external.
 
-Signed Q1.15 maps `-1.0` to `-32768` and clamps `+1.0` to `32767`. The host
-extends the 32-bit microsecond timestamp across wrap using the telemetry sequence.
+## Checks and compatibility
 
-Fault bitmap:
+`tests/protocol_test.cpp` checks independent CRC/golden packing, bit corruption,
+reserved words, session/sequence rules, timeout/clear and quadrature decoding.
+`tests/hardware_endpoint_test.cpp` exercises malformed traffic and watchdogs on
+real SPI with all motor bits zero; optional `--loopback` requires the documented
+physical wiring. `tests/integration.py` preserves the two-axis UI/API regression.
 
-| Bits | Meaning |
-|---|---|
-| 0 | Software E-stop latched |
-| 1 | Homing timeout or maximum-travel fault |
-| 2–11 | Reserved, zero |
-| 12 | Valid-command watchdog timeout |
-| 13 | Invalid or mismatched configuration |
-| 14 | CLA control fault/deadline |
-| 15 | CPU2 encoder-decoder overrun or handoff fault |
-| 16 | Encoder signal/rate fault |
-| 17 | Software travel/velocity limit |
-| 18 | Homing/switch-state fault |
-| 19 | SPI/DMA framing or deadline fault |
-| 20–25 | Active `HOME0_N`–`HOME5_N` states after polarity normalization |
-| 26–31 | Reserved, zero |
-
-## 6. DSP DMA implementation
-
-| Direction | DMA | Trigger | Source | Destination |
-|---|---|---|---|---|
-| Pi → DSP | Channel 1 | SPIA RX, `DMA_TRIGGER_SPIARX = 110` | SPI RX buffer, fixed | 80-word RAM buffer, incrementing |
-| DSP → Pi | Channel 2 | SPIA TX, `DMA_TRIGGER_SPIATX = 109` | 80-word RAM buffer, incrementing | SPI TX buffer, fixed |
-
-Use four 80-word buffers: RX active/standby and TX active/standby (640 bytes
-total). DMA is one-shot for exactly 80 words.
-
-- Before CS falls: both DMA channels are armed and the TX active buffer is ready.
-- CS falling: begins one transaction; no parsing or control work occurs per word.
-- CS rising: stop/inspect DMA counts, reject incomplete or oversized frames, swap
-  the complete RX buffer, publish a prepared TX standby buffer if available,
-  and re-arm both channels.
-- The 5 kHz control loop consumes only validated, completed standby frames. At
-  the 1 kHz baseline, a new frame is normally available every fifth control tick.
-
-The CS mirror is GPIO40/Input-XBAR14/XINT5 on both edges. Remove the current
-GPIO123/XINT1 frame-boundary implementation.
-
-## 7. Validation and recovery
-
-Reject the whole command without partial application when any of these fail:
-
-- frame length or CS boundary;
-- header or protocol version;
-- target device ID;
-- CRC;
-- strictly newer sequence check;
-- command type, payload, state, range, or configuration revision.
-
-On rejected frames, retain the previous valid cyclic command until the 50 ms
-watchdog expires, but never retain an explicit arm request. On timeout or a
-safety fault, command zero duty, drive all STBY signals low and shared EN low,
-and enter `DISARMED`, `FAULT`, or `ESTOP` as appropriate.
-
-Protocol freeze requires one shared set of golden byte vectors that passes on
-both the C++ host codec and C DSP codec, including:
-
-- every command type and telemetry decode;
-- positive/negative `int32`, finite float, `+0`, and `-0` values;
-- byte/word order and known CRC vectors;
-- bad CRC, wrong ID/version, stale sequence, and incomplete frames;
-- command acknowledgement and configuration-revision behavior;
-- 10,000 consecutive 1 kHz loopback transactions with no buffer corruption;
-- a separate one-DSP 5 kHz trial with 50,000 consecutive transactions, no DMA
-  re-arm or control deadline misses, and recorded transaction/jitter timing at
-  10 MHz; repeat at 20 MHz only after signal-integrity validation if more margin
-  is required;
-- logic-analyzer confirmation of mode, CS timing, and all 80 words.
+The legacy bench executable uses `dsp/host/legacy_spi.hpp` and cannot control a
+v5 image. Restore its matching firmware for recovery; there is no automatic
+fallback between protocols. The ROS bridge/UI/recorder deploy together with v5.

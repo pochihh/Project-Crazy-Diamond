@@ -13,7 +13,7 @@
 //     - DMA CH1 (trigger 110): SPI RX FIFO -> g_rxActive  (one word per trigger)
 //     - DMA CH2 (trigger 109): g_txActive  -> SPI TX FIFO (one word per trigger)
 //     - XINT5 on GPIO40 (CS mirror): both edges, guarded by g_cs_active
-//     - Double-buffered TX and RX; CPU calls SpiDma_updateTx() from main loop
+//     - Double-buffered TX and RX; CPU calls SpiDma_updateTx() from the non-nesting tick ISR
 //
 //   CS edge debounce:
 //     g_cs_active prevents processing the same frame twice if the XINT5
@@ -68,56 +68,16 @@ static void swapRxBuffers(void);
 static void swapTxBuffers(void);
 static bool validateAndParseRx(const uint16_t *buf);
 
-static inline uint16_t lo16(uint32_t v) { return (uint16_t)(v & 0xFFFFu); }
-static inline uint16_t hi16(uint32_t v) { return (uint16_t)(v >> 16); }
-
-static inline void pack_float(float f, uint16_t *lo, uint16_t *hi) {
-    union { float f; uint32_t u; } c; c.f = f;
-    *lo = (uint16_t)(c.u & 0xFFFFu);
-    *hi = (uint16_t)(c.u >> 16);
-}
-
-static inline float unpack_float(uint16_t lo_w, uint16_t hi_w) {
-    union { float f; uint32_t u; } c;
-    c.u = ((uint32_t)hi_w << 16) | lo_w;
-    return c.f;
-}
-
 //
 // ============ ISR runs from RAM for deterministic latency ============
 //
 #pragma CODE_SECTION(SpiDma_csIsr, ".TI.ramfunc")
-#pragma CODE_SECTION(calcCRC16, ".TI.ramfunc")
 #pragma CODE_SECTION(startDma, ".TI.ramfunc")
 #pragma CODE_SECTION(stopDma, ".TI.ramfunc")
 #pragma CODE_SECTION(rearmDma, ".TI.ramfunc")
 #pragma CODE_SECTION(swapRxBuffers, ".TI.ramfunc")
 #pragma CODE_SECTION(swapTxBuffers, ".TI.ramfunc")
 #pragma CODE_SECTION(validateAndParseRx, ".TI.ramfunc")
-
-//
-// ============ CRC-16/CCITT-FALSE ============
-//
-// poly=0x1021, init=0xFFFF, RefIn=false, RefOut=false, XorOut=0
-// Each 16-bit word is fed high byte first, matching SPI bit order.
-// Note: on C2000 uint8_t is 16-bit, so bytes are extracted manually.
-//
-static uint16_t calcCRC16(const uint16_t *buf, uint16_t n_words)
-{
-    uint16_t crc = 0xFFFF;
-    uint16_t i, j, b;
-    for (i = 0; i < n_words; i++) {
-        b = (buf[i] >> 8) & 0xFF;           // high byte first
-        crc ^= (b << 8);
-        for (j = 0; j < 8; j++)
-            crc = (crc & 0x8000) ? (uint16_t)((crc << 1) ^ 0x1021) : (uint16_t)(crc << 1);
-        b = buf[i] & 0xFF;                  // then low byte
-        crc ^= (b << 8);
-        for (j = 0; j < 8; j++)
-            crc = (crc & 0x8000) ? (uint16_t)((crc << 1) ^ 0x1021) : (uint16_t)(crc << 1);
-    }
-    return crc;
-}
 
 //
 // ============ SPI Pin Configuration ============
@@ -254,9 +214,13 @@ static void rearmDma(void)
                         (const void *)(SPIA_BASE + SPI_O_TXBUF),
                         (const void *)g_txActive);
 
+    DMA_clearTriggerFlag(SPI_DMA_RX_CH);
+    DMA_clearTriggerFlag(SPI_DMA_TX_CH);
+    DMA_clearErrorFlag(SPI_DMA_RX_CH);
+    DMA_clearErrorFlag(SPI_DMA_TX_CH);
+    // Resetting the TX FIFO creates the trigger that primes the next frame.
     SPI_resetTxFIFO(SPIA_BASE);
     SPI_resetRxFIFO(SPIA_BASE);
-
     DMA_enableTrigger(SPI_DMA_RX_CH);
     DMA_enableTrigger(SPI_DMA_TX_CH);
     startDma();
@@ -285,46 +249,14 @@ static void swapTxBuffers(void)
 //
 // ============ RX Frame Validation and Parsing ============
 //
-// Validates the RPi -> DSP frame (RX format: 0x55AA header, 17 words).
+// Validates the fixed-length v5 command frame at word zero.
 // On success, extracts payload and invokes the registered callback.
 //
 static bool validateAndParseRx(const uint16_t *buf)
 {
-    const uint16_t *frame = NULL;
-    bool header_found = false;
-    uint16_t offset;
-
-    for (offset = 0U; offset <= (MAX_FRAME_WORDS - RX_FRAME_WORDS); offset++) {
-        if (buf[offset] != RX_FRAME_HEADER ||
-            buf[offset + 1U] != RX_FRAME_VERSION) continue;
-
-        header_found = true;
-        if (calcCRC16(&buf[offset], RX_FRAME_WORDS - 1U) ==
-            buf[offset + RX_FRAME_WORDS - 1U]) {
-            frame = &buf[offset];
-            break;
-        }
-    }
-
-    if (frame == NULL) {
-        if (header_found) g_stats.crc_errors++;
-        else              g_stats.frame_errors++;
-        return false;
-    }
-
-    if (g_rxCallback) {
-        RxFrame_t rx;
-        uint16_t p = 2;
-        rx.cmd  = ((uint32_t)frame[p + 1] << 16) | frame[p]; p += 2;
-        rx.ref[0] = unpack_float(frame[p], frame[p+1]); p += 2;
-        rx.ref[1] = unpack_float(frame[p], frame[p+1]); p += 2;
-        rx.ref[2] = unpack_float(frame[p], frame[p+1]); p += 2;
-        rx.ref[3] = unpack_float(frame[p], frame[p+1]); p += 2;
-        rx.ref[4] = unpack_float(frame[p], frame[p+1]); p += 2;
-        rx.ref[5] = unpack_float(frame[p], frame[p+1]);
-        g_rxCallback(&rx);
-    }
-
+    RxFrame_t rx;
+    if (!pcd_decode_command(buf, &rx)) {g_stats.crc_errors++;return false;}
+    if (g_rxCallback) g_rxCallback(&rx);
     return true;
 }
 
@@ -348,13 +280,18 @@ __interrupt void SpiDma_csIsr(void)
             g_cs_active = false;
             g_stats.cs_rising_count++;
 
+            // Capture completion before HALT clears RUNSTS. Reject short/long
+            // transfers rather than decoding stale words left by the last frame.
+            bool complete = !DMA_getRunStatusFlag(SPI_DMA_RX_CH) &&
+                !DMA_getOverflowFlag(SPI_DMA_RX_CH) && SPI_getRxFIFOStatus(SPIA_BASE) == SPI_FIFO_RXEMPTY;
             stopDma();
             swapRxBuffers();
 
-            if (validateAndParseRx(g_rxDone)) {
+            if (complete && validateAndParseRx(g_rxDone)) {
                 g_stats.rx_frame_count++;
                 GPIO_togglePin(DEVICE_GPIO_PIN_LED1);
             } else {
+                if (!complete) g_stats.frame_errors++;
                 GPIO_writePin(DEVICE_GPIO_PIN_LED2, 0);
             }
 
@@ -401,30 +338,7 @@ void SpiDma_updateTx(const TxFrame_t *data)
 {
     if (!data) return;
 
-    uint16_t *buf = g_txStandby;
-    uint16_t i, k;
-
-    for (i = 0; i < MAX_FRAME_WORDS; i++) buf[i] = 0;
-    for (i = 0; i < TX_FRAME_NUM_DUMMY; i++) buf[i] = TX_FRAME_DUMMY_WORD;
-
-    i = TX_FRAME_NUM_DUMMY;
-    buf[i++] = TX_FRAME_HEADER;
-    buf[i++] = TX_FRAME_VERSION;
-
-    buf[i++] = lo16(data->timestamp_us);
-    buf[i++] = hi16(data->timestamp_us);
-
-    for (k = 0; k < 6; k++) { pack_float(data->ref[k], &buf[i], &buf[i+1]); i += 2; }
-    for (k = 0; k < 6; k++) { buf[i++] = lo16((uint32_t)data->pos[k]); buf[i++] = hi16((uint32_t)data->pos[k]); }
-    for (k = 0; k < 6; k++) { pack_float(data->u[k], &buf[i], &buf[i+1]); i += 2; }
-
-    buf[i++] = data->err_bitmap;
-    buf[i++] = data->err_count;
-
-    for (k = 0; k < 6; k++) buf[i++] = data->adc[k];
-    for (k = 0; k < 4; k++) { pack_float(data->quat[k], &buf[i], &buf[i+1]); i += 2; }
-
-    buf[i] = calcCRC16(&buf[TX_FRAME_NUM_DUMMY], TX_FRAME_DATA_WORDS - 1);
+    pcd_encode_telemetry(g_txStandby, data);
 
     g_txDataReady = true;
 }

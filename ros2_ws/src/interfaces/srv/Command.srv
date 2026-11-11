@@ -1,0 +1,13 @@
+string operation
+uint8 axis
+float64 value
+bool enabled
+string controller_type
+string profile
+string[] parameter_names
+float64[] parameter_values
+uint64 controller_revision
+---
+bool accepted
+uint64 command_id
+string message

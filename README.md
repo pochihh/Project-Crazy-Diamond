@@ -1,4 +1,50 @@
-# Project Crazy Diamond — Raspberry Pi Bench Commands
+# Project Crazy Diamond
+
+Real-time motor control and data acquisition using a Raspberry Pi and a
+TMS320F28379D DSP. Two axes have run stably from CSV input on the bench.
+ROS 2 Jazzy and the web control desk now run both axes in calibrated millimeters
+using DSP protocol v5. The firmware migration passed two-axis RAM/FLASH and
+standalone-boot tests, dock DIO/AIO loopbacks, and CPU2 functional encoder tests.
+See [stage-3 results and coverage limits](PLAN/STAGE3_RESULTS.md).
+
+## Web control desk
+
+Open **http://192.168.1.21:8000/** on the local network. The Pi services start
+disarmed. Enable the system and each desired motor, then drag its position slider
+within ±50 mm. Releasing the slider or closing the browser keeps the held target.
+
+To establish a manual zero: **disable the motor → move it manually → Reset zero**.
+Zero otherwise comes from the position when the host controller starts.
+
+Use Start recording and Stop & save to download CSV. Stop all disables both motors.
+The **Heart Phantom** dashboard has position/PWM control, live plots, duty meters,
+a fixed Stop All header, and an icon sidebar. System shows Pi usage and expandable
+10 Hz ROS topic views. Browser settings control theme, display rates, and performance
+stats. PWM holds duty on release/disconnect; switch modes with the axis disabled.
+
+Each axis opens **Controller settings** for live PID tuning and reusable YAML
+profiles. Save affects the named profile; other axes require explicit reload.
+See [project profiles and controller development](projects/README.md).
+
+- [Build, deployment, mock mode, and operation](PLAN/STAGE2_OPERATION.md)
+- [Bench acceptance results and remaining limits](PLAN/STAGE2_RESULTS.md)
+
+## Documentation
+
+- [Git synchronization and Pi deployment](PLAN/GIT_WORKFLOW.md)
+- [Current system and working SPI contract](PLAN/CURRENT_SYSTEM.md)
+- [Real-time fault logs and stability checks](PLAN/REALTIME_STABILITY.md)
+- [Four-stage implementation roadmap](PLAN/IMPLEMENTATION_PLAN.md)
+- [System design and open decisions](PLAN/ROS2_plan.md)
+- [Complete documentation guide](PLAN/plan.md)
+
+The commands below describe the **legacy v2/v3 firmware** sine/probe tool.
+They are incompatible with v5; use the ROS bridge for the current firmware. The working CSV
+implementation reported from the bench has not yet been located in this checkout.
+Stop `diamond-bridge.service` before running a bench tool: only one process may
+own the physical SPI device. Restart the service when finished; it starts disarmed.
+
+## Raspberry Pi bench commands
 
 Run these commands on the Raspberry Pi from the repository clone:
 

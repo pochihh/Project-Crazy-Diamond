@@ -1,313 +1,205 @@
-# ROS 2 Architecture and Interfaces
+# ROS 2 and Web Interfaces
 
-Status: first-pass ROS 2 Jazzy contract.
+Updated: 2026-11-10
 
-Last updated: 2026-08-05
+Status: implemented host/web contract with DSP protocol v5.
+[System design](ROS2_plan.md) owns behavior and decisions;
+[current system](CURRENT_SYSTEM.md) owns the existing wire protocol.
 
-This is the authoritative ROS 2 design, including the complete first-pass
-application topic and service inventory. It supports one physical DSP now and
-multiple configured/mock DSPs from the first release.
+The August interface list assumed a migrated DSP, DSP-owned homing, binary
+recording, and immediate multi-DSP support. It is superseded. Do not implement
+unavailable DSP commands just to reproduce that list.
 
-## 1. Runtime architecture
+## 1. Stage-2 ownership
 
-```text
-web browser
-    │ HTTP/WebSocket (LAN only)
-    ▼
-/ui_bridge ──► /robot ── public units ──► ros2_control /bridge
-    │                                         │
-    └──── services/status ─► /bridge_manager  ├─ 1 kHz SPI baseline ─► DSP 0 (5 kHz control)
-                                               └─ mock SPI ──────────► DSP 1…n
-```
-
-| Node/process | Package | Responsibility |
-|---|---|---|
-| `/bridge` | `bridge` | Renamed `ros2_control_node`; owns controller manager, hardware components, and the 1 kHz host/SPI real-time loop |
-| `/bridge_manager` | `bridge` | Non-real-time endpoint registry, configuration, diagnostics, and recording |
-| `/robot` | `robot` | Non-RT supervisory/manual command arbitration in geared-output units; never packs SPI |
-| `/ui_bridge` | `ui_bridge` | Authenticated LAN HTTP/WebSocket API and ROS client |
-| `/robot_state_publisher` | standard package | Publishes the robot model and TF when a URDF is loaded |
-
-Each configured DSP has a stable lowercase `dsp_id` and a ros2_control hardware
-component. Topics and services use `/dsp/<dsp_id>/...`. Joint names must be
-globally unique; the default convention is `<dsp_id>_<axis_name>`.
-
-Only `/robot` publishes accepted live commands to a DSP command topic. The UI
-and other manual clients send requests to `/robot/manual_command`; this keeps
-arbitration in one place and prevents competing publishers from directly
-driving hardware.
-
-Any future 1 kHz LQR or model-based controller runs as a C++ ros2_control
-controller plugin inside `/bridge` on CPU 3, not through a DDS topic. The plugin
-may live in the `robot` package; a separate controller package is unnecessary
-until there is more than one reusable controller library.
-
-## 2. Units and ros2_control interfaces
-
-The public ROS/UI unit contract is:
-
-| Interface | Unit |
+| Component | Owns |
 |---|---|
-| `position` | geared-output radians by default |
-| `velocity` | geared-output radians/second by default |
-| `duty_cycle` | normalized `[-1.0, +1.0]` |
+| C++ bridge/control process | The one SPI session, position controllers, real-time cycle, sample producer |
+| Non-RT host callbacks/worker | Validated command/config handoff, status publication, CSV writing |
+| Python UI bridge | HTTP/WebSocket, ROS requests/subscriptions, CSV parsing/warnings, downloads |
+| TypeScript frontend | Calibrated position controls, state/plots, enable/stop, recording controls |
 
-Each joint exports state and command interfaces named `position`, `velocity`,
-and `duty_cycle`. Exactly one command interface may be claimed per joint.
-ros2_control mode-switch hooks map the claimed interface to the DSP's
-`POSITION`, `VELOCITY`, or `DUTY` mode and reset its controller state safely.
+Callbacks and writer work execute outside the real-time update loop.
+Only the C++ bridge opens SPI. The bench test must not run against the same
+device while the ROS bridge owns it.
 
-Each DSP may also expose four named auxiliary encoders with `position` and
-`velocity` state only. They have independently configured public units and no
-ros2_control command interface, motor limits, or arm state.
+The C++ `bridge` rclcpp node owns a dedicated real-time thread. It converts
+position error to duty using the existing count-based PI/PID behavior. No
+ros2_control plugin/controller-manager layer is needed for stage 2. DSP
+POSITION/VELOCITY commands do not exist in the current protocol.
 
-The `bridge` hardware plugin performs the final configured conversion between
-public output units and DSP-native counts/counts-per-second. Raw cyclic values
-remain available only in diagnostics and recordings; they are not another 1 kHz
-DDS command path.
+## 2. Public data model
 
-## 3. Topic inventory
+Each configured axis has a stable name and DSP/index binding. Stage 2 configures
+one DSP and the two working axes; do not require multi-DSP machinery to move them.
 
-This table lists every project-owned topic and every standard topic explicitly
-consumed by the first-pass application. ROS-generated plumbing such as
-`/rosout`, `/parameter_events`, and controller-manager introspection topics is
-not an application interface.
+| Value | Contract |
+|---|---|
+| UI position target/state | Calibrated degrees (rotary) or mm (linear) |
+| Standard ROS joint position/state, if used | Radians (rotary) or meters (linear) |
+| DSP position | Signed native encoder counts |
+| Duty | Normalized `[-1, +1]`, explicitly called duty, not torque/effort |
+| Enable | Host requested state; current firmware has no explicit enable acknowledgment |
+| Timestamp | One existing DSP frame timestamp per sample |
+| Missing I/O/fault capabilities | Unavailable, not zero-valued measurements or invented DSP state |
 
-### 3.1 Global topics
+Calibration, motor polarity, controller gains, limits, and pairing are host
+configuration. Applying changes that affect motion should occur while disarmed.
+Motor/encoder scale conversion must preserve the existing count-based controller
+tuning during stage 2.
 
-| Topic | Type | Publisher → subscribers | Rate / QoS | Purpose |
-|---|---|---|---|---|
-| `/robot_description` | `std_msgs/msg/String` | `/robot_state_publisher` → `/bridge` | Transient-local, reliable, keep last 1 | URDF used by controller manager |
-| `/joint_states` | `sensor_msgs/msg/JointState` | joint-state broadcaster → `/robot_state_publisher`, `/ui_bridge`, tools | 50 Hz; sensor-data QoS | Standard position/velocity state for all joints |
-| `/dynamic_joint_states` | `control_msgs/msg/DynamicJointState` | joint-state broadcaster → diagnostic/tools | 50 Hz; sensor-data QoS | Includes nonstandard `duty_cycle` state interfaces |
-| `/tf` | `tf2_msgs/msg/TFMessage` | `/robot_state_publisher` → ROS consumers | Standard TF QoS | Moving transforms when a robot model is configured |
-| `/tf_static` | `tf2_msgs/msg/TFMessage` | `/robot_state_publisher` → ROS consumers | Transient-local standard TF QoS | Fixed transforms |
-| `/diagnostics` | `diagnostic_msgs/msg/DiagnosticArray` | `/bridge`, `/bridge_manager` → `/ui_bridge`, diagnostic tools | 1 Hz and on state change; reliable, keep last 10 | RT timing, SPI, DSP, config, and recorder health |
-| `/dsp_registry` | `interfaces/msg/DspRegistry` | `/bridge_manager` → `/ui_bridge`, tools | 1 Hz and on change; transient-local, reliable, keep last 1 | Configured endpoints and connection states |
-| `/recording/status` | `interfaces/msg/RecordingStatus` | `/bridge_manager` → `/ui_bridge` | 2 Hz while active and on change; transient-local, reliable, keep last 1 | Active session, devices, duration, dropped records, writer errors |
-| `/robot/manual_command` | `interfaces/msg/AxisCommandArray` | `/ui_bridge` or one authorized test client → `/robot` | Up to 50 Hz; reliable, keep last 1 | Bounded manual command request before arbitration |
+Axes 0/1 are linear rack-and-pinion actuators. Their UI unit is mm, standard ROS
+joint unit is meters, nominal scale is 321.8466626969 counts/mm, and UI range is
+−50 to +50 mm. Use the full formula and zero convention in
+[system design](ROS2_plan.md); no rotary-joint assumption applies to these axes.
+Capture zero from valid telemetry once per host-controller startup while disarmed;
+retain it across enable/disable and browser reconnects. A host-controller restart
+establishes a new zero. Per-axis `zero` captures a new host offset and resets the
+target/reference while that motor is disabled; it leaves DSP counts unchanged.
+The first backend is served on the trusted LAN without a login layer.
 
-If no robot model is loaded, `/robot_description`, `/tf`, and `/tf_static` are
-absent; this does not prevent motor bench testing.
+## 3. Minimal logical operations
 
-### 3.2 Per-DSP topics
+The definitions are in `ros2_ws/src/interfaces`. ROS names are absolute:
 
-Substitute the configured ID for `<id>`.
+- `/bridge/state`: `interfaces/msg/BridgeState`, reliable depth 1, 50 Hz. Includes
+  both axes, target/reference/position in mm, raw/zero counts, duties, host enables,
+  tuning, frame timestamp/sample counter, host faults, timing/drop/recorder state.
+  Also carries project/controller names, per-axis scale/travel bounds, control
+  mode (`0` position / `1` PWM), and normalized PWM target.
+- `/joint_states`: `sensor_msgs/msg/JointState`, 50 Hz, names `axis0`, `axis1`,
+  positions in meters. The ROS header uses host publication time; the custom
+  state and CSV use the DSP frame timestamp.
+- `/bridge/command`: `interfaces/srv/Command`; request `operation`, `axis` (0/1),
+  `value`, `enabled`; response `accepted`, `command_id`, `message`. Acceptance
+  means queued. Applied result appears as `last_command_id`/`command_error` in
+  state. The HTTP API waits for that result.
 
-| Topic | Type | Publisher → subscribers | Rate / QoS | Purpose |
-|---|---|---|---|---|
-| `/dsp/<id>/command` | `interfaces/msg/AxisCommandArray` | `/robot` → ros2_control command controller | Up to 100 Hz; reliable, keep last 1 | Six public-unit commands and requested modes |
-| `/dsp/<id>/axis_state` | `interfaces/msg/AxisStateArray` | `/bridge_manager` → `/ui_bridge`, tools | 50 Hz; best-effort, keep last 1 | UI-ready position, velocity, duty, mode, enable, home-switch, and per-axis fault state |
-| `/dsp/<id>/aux_encoder_state` | `interfaces/msg/EncoderStateArray` | `/bridge_manager` → `/ui_bridge`, tools | 50 Hz; best-effort, keep last 1 | Four configurable encoder-only sensor positions, velocities, and raw counts/rates |
-| `/dsp/<id>/status` | `interfaces/msg/DspStatus` | `/bridge_manager` → `/ui_bridge`, `/robot` | 1 Hz and on change; transient-local, reliable, keep last 1 | Identity, compatibility, safety state, config revision, last-seen, and communication counters |
+Supported operations: `target`, `pwm`, `mode`, `axis`, `system`, `stop`, `zero`, `clear` (host and DSP fault, leaves outputs disabled), `kp`, `ki`, `kd`, `limit`, `digital`, `analog`, `record_start`, `record_stop`. Tuning changes
+are session-only; permanent startup settings live in `projects/heart_phantom/bridge.yaml`.
 
-The ros2_control and SPI update loop remains 1 kHz in the baseline while each
-DSP snapshots and controls at 5 kHz. Publishing 1 kHz DDS telemetry is
-intentionally omitted; recordings receive every SPI sample from the in-process
-real-time ring instead.
+HTTP routes on port 8000:
 
-## 4. Application message contracts
+| Route | Meaning |
+|---|---|
+| `GET /api/state` | Latest state plus `bridge_alive` (received within 1 s) and age |
+| `POST /api/command` | Command object using the ROS request fields; 409 rejection, 422 invalid input, 503 unavailable, 504 timeout |
+| `WS /ws?hz=50` | State snapshots at the requested 10–50 Hz (default 50); no motor lease |
+| `WS /ws/topics?name=/bridge/state` | Latest topic message at 10 Hz, source count/age; subscription lasts only while open |
+| `GET /api/project` | Selected project manifest / axis labels |
+| `GET /api/recordings` | Session files, byte sizes, active flag |
+| `GET /api/recordings/{name}` | Completed CSV download; active file returns 409 |
+| `GET /api/system` | ROS nodes/topics, kernel, CPU count/load/per-core usage, memory/disk capacity and usage, optional GPU/temperature |
+| `/` | Built web control desk |
 
-Motor-axis arrays are bounded to six and auxiliary-encoder arrays to four; all
-parallel arrays must have matching lengths. Receivers reject unknown `dsp_id`,
-duplicate names, non-finite values, and invalid modes.
+The Python adapter adds `ui_instance` (new for each web-process run) and
+`ui_sequence` (increasing per received ROS state) to snapshots. These order HTTP
+fallback and WebSocket updates so delayed packets cannot overwrite fresh state.
+They are web-layer metadata; the ROS/SPI frames and recorder are unchanged.
+The browser requests one bounded HTTP snapshot at a time after 150 ms without a
+fresh sample. Rendering coalesces packet bursts into the latest state per display
+frame; plots retain available frame samples and use DSP time, not arrival spacing.
 
-### `AxisCommandArray`
+Only one HTTP command is in flight at a time. Direct ROS callers must consume
+state acknowledgments themselves. Rejection/timeout must not be interpreted as
+proof that a command was never applied.
 
-- `std_msgs/Header header`
-- `string dsp_id`
-- `string[<=6] joint_names`
-- `uint8[<=6] modes` (`0=DISABLED`, `1=POSITION`, `2=VELOCITY`, `3=DUTY`)
-- `float64[<=6] commands` in the public units defined above
+| Operation | Request / result | Owner |
+|---|---|---|
+| Read state | Target, measured position, raw counts, duty, requested enables, connection/loop health | Bridge → backend → UI |
+| Set target | Named axis and calibrated position; latest accepted target replaces prior target | Backend → command handoff |
+| Set PWM | Normalized signed duty; PWM mode only, constrained by duty limit; bypasses PID/polarity | Backend → bridge |
+| Select mode | `value=0` position / `1` PWM; disabled axis only; clears duty and initializes position target | Backend → bridge |
+| System enable/disable | Global permission; disable stops both axes | Backend → bridge |
+| Axis enable/disable | Selected axis request under system permission | Backend → bridge |
+| Stop | Explicit motor disarm; no implied restart | Backend → bridge |
+| Reset zero | Current measured count becomes host zero; disabled axis only | Bridge |
+| Read/apply tuning | Live complete PID updates; type/duty-limit changes while disabled; reusable YAML profiles | Host management |
+| Start/stop recording | Start sample capture; stop capture and finish the file outside RT | Host management/writer |
+| Recording status/list/download | Active state, sample/drop/error counts, completed CSV files | Host/backend |
+| CSV load (future) | Python parsing and advisory warnings; not exposed in stage 2 | Python only |
 
-### `AxisStateArray`
+Changing the arm mask in the existing firmware clears staged duty and stops/
+re-arms the motor outputs. The host must handle that transition deliberately;
+do not assume independent axis enable changes are seamless.
 
-- `std_msgs/Header header`
-- `string dsp_id`
-- `string[<=6] joint_names`
-- `float64[<=6] position`
-- `float64[<=6] velocity`
-- `float32[<=6] duty_cycle`
-- `float32[<=6] current` (zero while current feedback is absent)
-- `bool[<=6] current_valid`
-- `bool[<=6] home_active`
-- `uint8[<=6] modes`
-- `bool[<=6] enabled`
-- `uint32[<=6] fault_bits`
+The `clear` operation queues a DSP CLEAR and keeps the system disabled until
+fault-free telemetry is received. `digital` uses channel 0–3 and integer value
+0/1; `analog` uses channel 0/1 and integer DAC code 0–4095. Outputs require
+System Enable, independently of motor selection. Stop clears all outputs.
 
-### `EncoderStateArray`
+State now includes protocol/rate, DSP state/arm/fault/sequence/ack, six raw encoder
+counts and validity, DI/DO bits, six ADC results, two DAC commands, validity masks,
+invalid/rejected/watchdog/encoder counters and CPU2 maximum polling gap.
+CSV includes the same newest-value I/O/count fields with its one frame timestamp.
 
-- `std_msgs/Header header`
-- `string dsp_id`
-- `string[<=4] sensor_names`
-- `bool[<=4] enabled`
-- `int32[<=4] raw_position_counts`
-- `float32[<=4] raw_count_rates`
-- `float64[<=4] position` in each sensor's configured public unit
-- `float64[<=4] velocity` in that unit per second
+## 4. Target and connection lifetime
 
-### `DspStatus`
+- Manual targets are the stage-2 command source; HTTP requests are serialized.
+- Hold the last position target or PWM duty on slider release. PWM has no position hold.
+- Every enable clears PWM to zero; preloaded disabled duty is not replayed.
+- PWM exceeding measured travel bounds faults/disarms both axes.
+- Browser disconnect does not disarm, disconnect the bridge, or end recording.
+- Reconnecting the UI loads active state; it does not send initial defaults.
+- System disable, explicit stop, or host/SPI control failure still stops motion.
+- Host restart starts disarmed; reconnecting communications does not re-arm.
+- The trusted-LAN release assumes one operator. Multiple tabs can read/control
+  the same state; latest accepted target wins. No ownership/session arbitration
+  is implemented. Add it if concurrent operators become a requirement.
 
-- configured ID/display name and reported 32-bit device ID;
-- endpoint state: `OFFLINE`, `ONLINE`, `INCOMPATIBLE`, or `ACTIVE`;
-- firmware/protocol versions, motor-axis count, and auxiliary-encoder count;
-- DSP safety state, active configuration revision, and fault bitmap;
-- host monotonic last-seen time, command/telemetry sequences, CRC errors,
-  stale frames, timeouts, and deadline misses.
+## 5. Real-time and recording boundary
 
-### `DspRegistry`
+The v5 host/SPI cadence is 2 kHz. Reserve the real-time thread
+for bounded command consumption, controller computation, one SPI exchange,
+counters, and copying the latest sample into preallocated storage. Command
+consumption is bounded to 128 per tick; Stop overrides queued enables. Samples
+use a 4,096-slot ring. Overflow increments a visible drop counter; it never
+blocks the controller. An armed physical cycle exceeding its 500 µs deadline
+latches a host fault and disarms. Mock timing is diagnostic only.
 
-- ROS timestamp;
-- bounded array of `DspStatus` entries, one per configured endpoint.
+Run ROS callbacks, file/network I/O, CSV parsing, diagnostics formatting, and
+disk writing outside that thread. The stage-2 CSV writer shares the non-RT ROS
+executor; a sustained disk stall can delay commands/status and fill the sample
+queue, but cannot block the control thread. Split out a writer if that becomes
+a measured limitation. Use decimated UI state/plots, approximately
+50 Hz as the earlier proposal suggested; do not push every raw sample through
+the browser.
 
-### `RecordingStatus`
+The writer records every received sample using one frame timestamp plus the
+available target, raw/calibrated position, requested/reported duty, and session
+metadata. Keep the existing protocol's full-duplex delay visible in naming;
+do not fabricate same-tick command acknowledgments. No binary recorder or
+per-signal timing system is required.
 
-- state: `IDLE`, `STARTING`, `RECORDING`, `STOPPING`, or `ERROR`;
-- session ID, selected DSP IDs, monotonic start time, elapsed duration;
-- records written/dropped and the last writer error.
+## 6. Later extensions
 
-## 5. Service inventory
+Robot packages and compiled controller types / reusable YAML profiles are
+[documented for discussion](ROBOT_AND_CONTROLLERS.md). Automatic Pi homing,
+local limit protection and multiple DSPs remain separate work. The concrete
+current wire contract is [protocol v5](spi_protocol.md).
 
-Services are non-real-time. Their callbacks validate requests and pass bounded
-state to the RT loop through `realtime_tools::RealtimeBuffer` or the existing
-ros2_control equivalent.
 
-| Service | Type | Owner | Contract |
-|---|---|---|---|
-| `/bridge_manager/probe` | `interfaces/srv/ProbeDsps` | `/bridge_manager` | Probe only endpoints declared in `system.yaml`; return the registry snapshot |
-| `/bridge_manager/reload_configuration` | `std_srvs/srv/Trigger` | `/bridge_manager` | Validate the canonical YAML and stage changed inactive endpoints |
-| `/bridge_manager/apply_configuration` | `interfaces/srv/ApplyConfiguration` | `/bridge_manager` | Validate a structured config, apply raw limits/A/B arrays and auxiliary decoder settings while disarmed, await the DSP revision, then atomically persist YAML |
-| `/dsp/<id>/activate` | `std_srvs/srv/SetBool` | `/bridge_manager` | Connect/disconnect one configured endpoint; activation requires compatible identity/protocol |
-| `/dsp/<id>/arm` | `std_srvs/srv/Trigger` | `/bridge_manager` | Arm only after config revision, limits, and software/decoder/control checks pass |
-| `/dsp/<id>/disarm` | `std_srvs/srv/Trigger` | `/bridge_manager` | Request immediate protocol disarm; remains available whenever connected |
-| `/dsp/<id>/software_estop` | `std_srvs/srv/Trigger` | `/bridge_manager` | Latch PWM zero, all STBY low, and shared EN low; never substitutes for the physical E-stop |
-| `/dsp/<id>/clear_fault` | `interfaces/srv/ClearFault` | `/bridge_manager` | Clear selected clearable faults only when the physical condition is gone |
-| `/dsp/<id>/zero_encoders` | `interfaces/srv/EncoderMask` | `/bridge_manager` | Zero selected motor-axis and/or auxiliary encoder counts while disarmed |
-| `/recording/start` | `interfaces/srv/StartRecording` | `/bridge_manager` | Validate selected IDs, create a session, snapshot config, then enable capture |
-| `/recording/stop` | `std_srvs/srv/Trigger` | `/bridge_manager` | Disable capture, drain and fsync the writer, then return the session ID |
-| `/recording/list` | `interfaces/srv/ListRecordings` | `/bridge_manager` | Return metadata/download IDs for completed local sessions |
+## Controller profiles (2026-11-11)
 
-Standard `/controller_manager/*` services remain available to ROS tools for
-loading, switching, and inspecting controllers. They are not exposed directly
-by the web UI.
+`/bridge/controllers` (`interfaces/srv/ControllerCatalog`) lists compiled types,
+parameter metadata, saved profiles and invalid-file diagnostics. HTTP exposes
+it at `GET /api/controllers`. `BridgeState.controllers` contains each axis's
+active profile ID, type and complete parameter snapshot; `controller_revision`
+identifies changes, and `reference_speed_mm_s` describes the reference slew.
 
-### 5.1 Homing action
+The existing Command service and `POST /api/command` add:
 
-| Action | Type | Owner | Contract |
-|---|---|---|---|
-| `/dsp/<id>/home_axis` | `interfaces/action/HomeAxis` | `/bridge_manager` | Home one axis using the DSP sequence; feedback reports phase/raw count/switch state; cancel sends `ABORT_HOMING` and disarms |
+| Operation | Payload / effect |
+|---|---|
+| `controller_apply` | `controller_type` plus complete parameter names/values; atomic live update for the same type |
+| `profile_load` | `profile` ID; read YAML and explicitly apply to one axis |
+| `profile_save` | Current `profile` ID and `controller_revision`; atomically save current active parameters |
+| `profile_create` | New `profile` ID and `controller_revision`; create without overwrite and select for the current session |
 
-`HomeAxis` goal contains `dsp_id` and axis index. Result contains success,
-result code, and latched zero count. The action is rejected unless the DSP is
-connected, disarmed, configured, and no other axis is homing.
-
-## 6. Real-time boundary
-
-The CPU 3 controller-manager update thread, at the first-pass baseline:
-
-- runs at a 1 kHz target under documented `SCHED_FIFO` priority;
-- calls `mlockall`, pre-faults its stack, and allocates buffers before start;
-- performs one fixed 160-byte full-duplex SPI transaction per active physical
-  DSP per cycle;
-- runs active controllers and updates fixed counters;
-- performs no heap allocation, filesystem/network I/O, ROS logging, parameter
-  calls, or service work;
-- transfers telemetry to non-RT consumers with preallocated single-producer,
-  single-consumer storage.
-
-The initial physical setup activates one DSP. Multi-DSP timing must still be
-measured before more physical devices are enabled in the same 1 kHz process.
-Non-RT executors, the UI, IRQs, and recording writer run on CPUs 0–2.
-
-The Pi is the SPI master, so `/bridge` schedules each transaction and therefore
-chooses the stream rate. The v4 frame does not change for a later one-DSP 5 kHz
-stream, but that mode is enabled only after the host loop, Linux scheduling,
-SPI transaction, DSP DMA re-arm, and 200 µs end-to-end deadline pass the HIL test
-in [spi_protocol.md](spi_protocol.md). The DSP control loop remains 5 kHz at
-either stream rate.
-
-Host baseline: Ubuntu 24.04, ROS 2 Jazzy, a verified PREEMPT_RT kernel, isolated
-CPU 3, fixed test governor, SPI IRQ kept off CPU 3 unless measurement says
-otherwise, and a recorded `cyclictest` result before ROS integration.
-
-## 7. Configuration flow
-
-`config/system.yaml` is the canonical source. The Pi validates all fields,
-computes encoder/gear conversions and raw DSP limits, stages one-axis raw limits
-and the position/velocity A/B coefficient arrays plus auxiliary decoder settings,
-commits the complete revision, checks acknowledgements, and confirms the active
-revision before allowing arm.
-A failed apply leaves the prior DSP revision and YAML file
-active. A successful UI edit is written via temporary file, `fsync`, and atomic
-rename.
-
-Hardware pin routing, decoder type, and PWM slew are reviewed board-profile data,
-not free-form web edits. Encoder cycles, gear ratio, sign, zero, public units, limits,
-auxiliary enable/rate limits, and controller coefficients (orders 0–16) are
-editable while disarmed. The multiplier is fixed by hardware path (`×4` for all
-six motor axes and `×2` for auxiliary encoders), not freely editable.
-
-## 8. Recording and web UI
-
-Recording begins only after `/recording/start` and is intended for sessions under
-one minute. The RT loop copies the host monotonic timestamp, DSP ID, raw command
-frame, and raw telemetry frame into a preallocated ring. A non-RT writer owns all
-file operations. Disk-full or writer failure stops recording and reports an error
-without blocking motor control. Binary is canonical; CSV conversion is deferred
-until an analysis consumer needs it. “Full rate” means every SPI transaction:
-1 kHz at the baseline, or 5 kHz if that later one-DSP stream mode is enabled.
-
-The UI connects only to `/ui_bridge` on the trusted LAN. It receives approximately
-50 Hz plot/state updates, while status and diagnostics use the rates above. It
-provides login, registry/probe/activate, configuration apply/revert, bounded
-manual commands, arm/disarm/software-E-stop/clear/zero/home, plots, recording, download, and diagnostic
-views, including the four encoder-only sensor channels. A browser disconnect is
-not a safety mechanism; the DSP watchdog is.
-
-## 9. Repository layout
-
-Folder and package names do not use a `crazy_diamond_` prefix.
-
-```text
-config/
-  system.yaml
-PLAN/
-  electronics.md
-  wiring_table.md
-  spi_protocol.md
-  ros2_interfaces.md
-  plan.md
-  IMPLEMENTATION_PLAN.md
-  DSP_DEV_HISTORY.md
-docker/
-dsp/
-  f28379d/
-    cpu1/                  # SPI, safety, snapshots, CLA/control integration
-    cpu2/                  # three ×4 eCAP and four ×2 XINT encoder decoders
-    shared/                # fixed IPC structs and protocol definitions
-ros2_ws/
-  src/
-    interfaces/            # messages and services above
-    bridge/                # SPI/mock sessions, ros2_control, registry, recorder
-    robot/                 # command arbitration and high-level public-unit control
-    ui_bridge/             # FastAPI/WebSocket backend and ROS client
-    bringup/               # launch files and hardware/mock profiles
-web_ui/                    # React frontend; not a ROS package
-```
-
-No transport factory, dedicated recorder package, or separate controller package
-is introduced until a second real use requires one.
-
-## 10. Required multi-DSP tests
-
-- Registry behavior with zero, one, and two configured mock endpoints.
-- One endpoint going offline and reconnecting without disturbing another.
-- Duplicate configured IDs and duplicate reported device IDs rejected.
-- Protocol-version mismatch shown as `INCOMPATIBLE` and never activated.
-- Independent command/telemetry sequences with no cross-device command leakage.
-- Commands on `/dsp/a/command` never reach `/dsp/b`.
-- Auxiliary encoder state remains namespaced and never creates a command interface.
-- Configuration revisions and service results remain per-device.
-- One recording containing selected devices preserves the correct DSP ID on
-  every sample.
-- UI selection changes subscriptions/views without reconnecting directly to DSPs.
+HTTP uses a `parameters` name/value object; the ROS request uses parallel
+`parameter_names` / `parameter_values` arrays. Saving rejects stale revisions or
+pending commands. Other axes never reload automatically. The catalog and file
+operations run outside the RT thread; commands handed to RT contain fixed-size
+values only. Type changes require disable; PID parameter updates do not reset
+all controller state. Existing `kp` / `ki` / `kd` commands remain compatible and
+now support live tuning; the UI applies all gains together.

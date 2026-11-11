@@ -1,0 +1,21 @@
+bridge:
+  ros__parameters:
+    project_id: heart_phantom
+    mock: true
+    spi_device: /dev/spidev0.0
+    recording_directory: recordings
+    speed_mm_s: 20.0
+    tracking_limit_mm: 15.0
+    controller_directory: projects/heart_phantom/controllers
+    axis0.controller_profile: bench_pid
+    axis0.motor_sign: -1.0
+    axis0.duty_limit: 1.0
+    axis1.controller_profile: bench_pid
+    axis1.motor_sign: -1.0
+    axis1.duty_limit: 1.0
+    axis0.counts_per_mm: 321.846662696944
+    axis0.minimum_mm: -50.0
+    axis0.maximum_mm: 50.0
+    axis1.counts_per_mm: 321.846662696944
+    axis1.minimum_mm: -50.0
+    axis1.maximum_mm: 50.0

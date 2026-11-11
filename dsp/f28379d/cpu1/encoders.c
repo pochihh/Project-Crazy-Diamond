@@ -15,6 +15,7 @@
 
 #include "encoders.h"
 #include <string.h>
+#include "ipc_layout.h"
 
 //
 // ============ Pin assignments — update to match your PCB ============
@@ -55,12 +56,14 @@
 // ============ IPC shared RAM ============
 //
 // CPU2TOCPU1RAM starts at 0x03F800 (CPU1 memory map).
-// CPU2 writes Cpu2EncoderData_t at the base of this region.
+// CPU2 writes Cpu2ToCpu1Ipc at the base of this region.
 // We access it as a pointer to the fixed hardware address.
 // CPU1 is read-only here (hardware enforced for CPU2-owned data).
 //
-static volatile Cpu2EncoderData_t * const gCpu2Data =
-    (volatile Cpu2EncoderData_t *)0x03F800UL;
+static volatile Cpu2ToCpu1Ipc *const gCpu2Data=(volatile Cpu2ToCpu1Ipc *)0x03F800UL;
+static uint32_t cpu2_sequence,cpu2_seen_us;
+volatile uint16_t gEncoderValid=7U;
+volatile uint16_t gCpu2MaxPollUs;
 
 //
 // ============ Public state ============
@@ -207,7 +210,7 @@ void Encoders_init(void)
 //
 // ============ Encoders_updatePosition ============
 //
-void Encoders_updatePosition(void)
+void Encoders_updatePosition(uint32_t now_us)
 {
     // EQEP axes (0-2)
     gEncPos[0] = (int32_t)EQEP_getPosition(EQEP1_BASE);
@@ -219,14 +222,22 @@ void Encoders_updatePosition(void)
     eqep_log_errors(EQEP2_BASE, 1U);
     eqep_log_errors(EQEP3_BASE, 2U);
 
-    // CPU2 axes (3-5) — read from IPC shared RAM (CPU2TOCPU1RAM @ 0x03F800)
-    gEncPos[3] = gCpu2Data->enc_pos[0] - s_cpu2_offset[0];
-    gEncPos[4] = gCpu2Data->enc_pos[1] - s_cpu2_offset[1];
-    gEncPos[5] = gCpu2Data->enc_pos[2] - s_cpu2_offset[2];
-
-    gEncErrors[3] = gCpu2Data->err_count[0];
-    gEncErrors[4] = gCpu2Data->err_count[1];
-    gEncErrors[5] = gCpu2Data->err_count[2];
+    if(gCpu2Data->abi_version==IPC_LAYOUT_VERSION && gCpu2Data->active_slot<2U){
+        uint16_t index=gCpu2Data->active_slot,k;
+        const volatile Cpu2EncoderSnapshot *source=&gCpu2Data->slot[index];
+        uint32_t before=source->sequence_begin;
+        Cpu2EncoderSnapshot snapshot=*source;
+        if(before && !(before&1U) && before==snapshot.sequence_end &&
+           source->sequence_begin==before && gCpu2Data->active_slot==index){
+            if(before!=cpu2_sequence){cpu2_sequence=before;cpu2_seen_us=now_us;}
+            for(k=0;k<3;k++){
+                gEncPos[k+3]=(int32_t)((uint32_t)snapshot.motor_count[k]-(uint32_t)s_cpu2_offset[k]);
+                gEncErrors[k+3]=snapshot.transition_error[k];
+            }
+            gCpu2MaxPollUs=(uint16_t)((snapshot.max_poll_cycles+199U)/200U);
+        }
+    }
+    gEncoderValid=(cpu2_sequence && (uint32_t)(now_us-cpu2_seen_us)<10000UL)?63U:7U;
 }
 
 //
@@ -234,6 +245,7 @@ void Encoders_updatePosition(void)
 //
 void Encoders_zeroPosition(void)
 {
+    uint16_t i;
     EQEP_setPosition(EQEP1_BASE, 0U);
     EQEP_setPosition(EQEP2_BASE, 0U);
     EQEP_setPosition(EQEP3_BASE, 0U);
@@ -242,9 +254,7 @@ void Encoders_zeroPosition(void)
     gEncPos[1] = 0;
     gEncPos[2] = 0;
 
-    s_cpu2_offset[0] = gCpu2Data->enc_pos[0];
-    s_cpu2_offset[1] = gCpu2Data->enc_pos[1];
-    s_cpu2_offset[2] = gCpu2Data->enc_pos[2];
+    for(i=0;i<3;i++) s_cpu2_offset[i]+=gEncPos[i+3];
 }
 
 //

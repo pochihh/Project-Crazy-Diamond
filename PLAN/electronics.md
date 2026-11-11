@@ -1,14 +1,21 @@
 # Electronics and DSP Pin Assignment
 
-Status: locked prototype pin map; complete continuity and rate gates before
-energized multi-axis tests
+Status: existing hardware reference plus proposed expansion allocations
 
-Last updated: 2026-08-05
+Last updated: 2026-11-10 (pin assignments retained from 2026-08-05)
 
-This is the authoritative hardware interface for the Raspberry Pi 5,
-TMS320F28379D controlCARD, six current MC33926 boards, six motor encoders, four
-optional encoder-only sensors, and six homing switches. Literal dock hookups are
-in [wiring_table.md](wiring_table.md).
+Two-axis operation is established by the owner's bench result. This document
+combines board constraints with planned six-axis, auxiliary-encoder, and switch
+allocations; it is not evidence that every listed feature is implemented or wired.
+See [current system](CURRENT_SYSTEM.md) for implementation status and
+[wiring_table.md](wiring_table.md) for literal dock hookups.
+
+Protocol v5 uses three eQEP and three CPU2-polled motor encoder channels.
+General I/O is 4 DI / 4 DO / 6 AI / 2 AO through direct dock wiring. The
+[v5 allocation](wiring_table.md#protocol-v5-direct-dock-io) overrides older
+reservations below: ADCA0/1 are DAC outputs, ADCB0–5 are active analog inputs,
+GPIO32/33/80/81 are DI and GPIO35–38 are DO. Home/limit and auxiliary encoder
+allocations remain proposals. CPU2 uses GPIO polling, not eCAP interrupts.
 
 ## 1. Electrical architecture
 
@@ -29,14 +36,22 @@ Pi, ROS 2, and DSP software.
 
 ## 2. Reference axis and units
 
-The software supports general brushed DC motors and A/B encoders. These Maxon
-parts are the initial configuration, not firmware constants.
+The system is intended to support general brushed DC motors and A/B encoders.
+These Maxon parts are the documented reference assembly, not firmware constants.
 
 | Component | Part | First-pass data |
 |---|---|---|
 | Motor | Maxon 148867 | RE 40, 24 V, 150 W |
 | Gearhead | Maxon 203116 | absolute ratio `91/6` |
 | Encoder | Maxon 110514 / HEDL-5540 | 500 cycles/turn, differential A/B/index |
+| Working axes 0/1 transmission | Rack and pinion | 30 teeth, module 1 mm; gearbox output drives pinion |
+
+The owner confirmed the encoder/gearbox parameters for both working axes on
+2026-11-10. They are linear actuators. Pinion pitch diameter is 30 mm and travel
+per output revolution is `30π` mm. Nominal scale is
+`(500 × 4 × (91/6)) / (30π) = 321.8466626969` counts/mm. The first UI uses a
+−50 to +50 mm range on both axes; see [system design](ROS2_plan.md) for zero and
+conversion behavior. This calculation is not a measured backlash/scale test.
 
 The motor's 6 A continuous rating exceeds the MC33926's nominal 5 A rating and
 the current PCB has no current-feedback output. Treat the bridge as derated:
@@ -46,21 +61,23 @@ start one-axis tests with a 0.5 A bench-supply limit and 2% duty.
 |---|---:|---:|
 | Counts per encoder revolution at 500 CPT | 2,000 | 1,000 |
 | Counts per geared output revolution at ratio `91/6` | 30,333.333... | profile-dependent |
-| Motor event rate at 12,000 rpm | 400,000 interrupts/s per CPU2-decoded motor axis | profile-dependent |
+| Motor event rate at 12,000 rpm | 400,000 transitions/s per CPU2-decoded motor axis | profile-dependent |
 
-Axes 0–2 use hardware eQEP at `×4`. Axes 3–5 interrupt on both A and B edges
-through eCAP1–6 and also produce `×4`. Auxiliary encoders interrupt on both A
-edges and sample B, producing `×2`.
+Axes 0–2 use hardware eQEP at ×4. Axes 3–5 now use CPU2 GPIO polling at ×4,
+with three-sample input qualification. The earlier six-eCAP interrupt approach
+is superseded. Four auxiliary decoders remain deferred.
 
-At the gearhead's 8,000 rpm continuous input limit, axes 3–5 can generate about
-800,000 CPU2 interrupts/s in aggregate before auxiliary traffic. At the motor's
-12,000 rpm mechanical limit they can generate 1.2 million/s. CPU2 has no other
-real-time job, but this remains an explicit simultaneous-rate acceptance gate;
-it is not assumed to fit from cycle estimates alone.
+At 8,000 rpm each 500-CPT motor encoder produces approximately 266,667 edges/s
+(3.75 µs spacing); at 12,000 rpm this is 400,000 edges/s (2.5 µs spacing).
+The observed CPU2 polling gap is reported in telemetry, but idle-pin timing is
+not proof of counting accuracy under simultaneous external edges. Rate acceptance
+requires external stimulus on all three channels and comparison with known counts.
 
-The DSP uses only native counts and counts/second. The Pi converts geared-output
-radians and radians/second using configured encoder scale, gear ratio, sign, and
-zero.
+The current DSP reports native counts and accepts normalized duty. Stage 2 adds
+Pi conversion using configured scale, transmission, direction, and zero so the
+UI controls calibrated degrees/mm immediately (mm for the two working axes).
+Standard ROS joint interfaces, if used, retain radians/meters internally.
+Other axes still require their own confirmed transmission parameters.
 
 ## 3. Current MC33926 PCB contract
 
@@ -76,7 +93,7 @@ The exact schematic is unavailable, but continuity established:
 
 | Board signal | DSP resource | Required behavior |
 |---|---|---|
-| `PWM1`–`PWM6` | ePWM1A–ePWM6A | 20 kHz duty magnitude; zero before direction changes |
+| `PWM1`–`PWM6` | ePWM1A–ePWM6A | 20 kHz duty magnitude; existing direction/duty update behavior |
 | `DIR1`–`DIR6` | six GPIO outputs | Per-axis direction |
 | `STBY1`–`STBY6` | six GPIO outputs | Low disables/stands by that axis; high permits drive |
 | `MOTOR_EN` | one GPIO output branched to all six `EN` inputs | Low disables all axes; high permits operation |
@@ -128,15 +145,16 @@ wired.
 
 | Axis | PWM | STBY | DIR | Future current input |
 |---:|---|---|---|---|
-| 0 | GPIO0 / HSEC49 / ePWM1A | GPIO1 / HSEC51 | GPIO12 / HSEC58 | ADCA0 / HSEC9 |
-| 1 | GPIO2 / HSEC53 / ePWM2A | GPIO3 / HSEC55 | GPIO13 / HSEC60 | ADCA1 / HSEC11 |
+| 0 | GPIO0 / HSEC49 / ePWM1A | GPIO1 / HSEC51 | GPIO12 / HSEC58 | Reassigned to DACA / AO0 |
+| 1 | GPIO2 / HSEC53 / ePWM2A | GPIO3 / HSEC55 | GPIO13 / HSEC60 | Reassigned to DACB / AO1 |
 | 2 | GPIO4 / HSEC50 / ePWM3A | GPIO5 / HSEC52 | GPIO14 / HSEC62 | ADCA2 / HSEC15 |
 | 3 | GPIO6 / HSEC54 / ePWM4A | GPIO7 / HSEC56 | GPIO15 / HSEC64 | ADCA3 / HSEC17 |
 | 4 | GPIO8 / HSEC57 / ePWM5A | GPIO9 / HSEC59 | GPIO16 / HSEC67 | ADCA4 / HSEC21 |
 | 5 | GPIO10 / HSEC61 / ePWM6A | GPIO11 / HSEC63 | GPIO17 / HSEC69 | ADCA5 / HSEC23 |
 
-Shared `MOTOR_EN` is GPIO18 / HSEC71. ADCA0–5 are reserved for a future PCB and
-remain disabled in the current firmware/configuration.
+Shared `MOTOR_EN` is GPIO18 / HSEC71. ADCA2–5 remain reserved for future motor-current
+feedback. ADCA0/1 now serve DAC outputs. This does not prevent
+stage-3 direct-dock tests of separately assigned analog channels.
 
 ### 5.2 Motor encoders
 
@@ -145,12 +163,13 @@ remain disabled in the current firmware/configuration.
 | 0 | GPIO20 / HSEC68 | GPIO21 / HSEC70 | GPIO23 / HSEC74 | eQEP1 / CPU1 | `×4` |
 | 1 | GPIO54 / HSEC100 | GPIO55 / HSEC102 | GPIO57 / HSEC106 | eQEP2 / CPU1 | `×4` |
 | 2 | GPIO62 / HSEC127 | GPIO63 / HSEC128 | GPIO65 / HSEC130 | eQEP3 / CPU1 | `×4` |
-| 3 | GPIO24 / HSEC75 / XBAR7 → eCAP1 | GPIO25 / HSEC77 / XBAR8 → eCAP2 | none | CPU2, both A/B edges | `×4` |
-| 4 | GPIO26 / HSEC79 / XBAR9 → eCAP3 | GPIO27 / HSEC81 / XBAR10 → eCAP4 | none | CPU2, both A/B edges | `×4` |
-| 5 | GPIO30 / HSEC80 / XBAR11 → eCAP5 | GPIO39 / HSEC88 / XBAR12 → eCAP6 | none | CPU2, both A/B edges | `×4` |
+| 3 | GPIO24 / HSEC75 / CPU2 GPIO polling | GPIO25 / HSEC77 / CPU2 GPIO polling | none | CPU2 polling, A/B transitions | `×4` |
+| 4 | GPIO26 / HSEC79 / CPU2 GPIO polling | GPIO27 / HSEC81 / CPU2 GPIO polling | none | CPU2 polling, A/B transitions | `×4` |
+| 5 | GPIO30 / HSEC80 / CPU2 GPIO polling | GPIO39 / HSEC88 / CPU2 GPIO polling | none | CPU2 polling, A/B transitions | `×4` |
 
 Index on axes 0–2 is diagnostic only; it does not automatically reset position.
-Homing defines axis zero. Axes 3–5 are A/B-only in this pass.
+Stage 2 uses the measured startup position as zero. Future homing will establish
+a machine reference. Axes 3–5 are A/B-only.
 
 ### 5.3 Auxiliary encoders
 
@@ -161,7 +180,7 @@ Homing defines axis zero. Axes 3–5 are A/B-only in this pass.
 | 2 | GPIO69 / HSEC134 / XBAR6 → XINT3 | GPIO70 / HSEC137 | CPU2, both A edges/sample B | `×2` |
 | 3 | GPIO71 / HSEC138 / XBAR13 → XINT4 | GPIO73 / HSEC140 | CPU2, both A edges/sample B | `×2` |
 
-CPU2 publishes all seven software-decoded encoder counts and diagnostics to
+The motor-encoder CPU2 implementation publishes counts and diagnostics to
 CPU1 at 5 kHz through CPU2→CPU1 message RAM. It writes an inactive snapshot
 slot, completes its sequence guard, then switches the active slot. CPU1 validates
 the slot and sequence at the control boundary. IPC flags are for boot,
@@ -177,7 +196,7 @@ configuration, zero/acknowledgement, and liveness—not per encoder edge.
 | CE0 | BCM8 / physical 24 | GPIO61 / HSEC126 / SPIA STE and GPIO40 / HSEC89 / XBAR14 → XINT5 |
 | GND | physical 6 or another ground | common logic ground |
 
-### 5.5 Homing switches
+### 5.5 Proposed homing switches (not implemented)
 
 | Axis | Signal | GPIO / dock | Handling |
 |---:|---|---|---|
@@ -188,45 +207,46 @@ configuration, zero/acknowledgement, and liveness—not per encoder edge.
 | 4 | `HOME4_N` | GPIO78 / HSEC145 | CPU1 5 kHz polling, internal pull-up |
 | 5 | `HOME5_N` | GPIO79 / HSEC146 | CPU1 5 kHz polling, internal pull-up |
 
-Wire each normally-open switch from its GPIO directly to logic ground. Open is
-high and reached/closed is low. There is no shared `LIMIT_ANY`, no limit ISR,
-and no additional limit function in this pass. GPIO80–82 remain spares.
+The earlier proposed active-low profile wires a normally-open switch from GPIO
+to logic ground: open high, pressed low. The new requirement is separately
+configurable input polarity plus min/max switches. These six home assignments
+are reference allocations, not a completed allocation for all required inputs.
+GPIO80/81 now serve general DI; GPIO82 remains spare.
 
-Homing runs one axis at a time: move away if initially active, seek, back off
-until released, reapproach slowly, then latch the raw count/offset. Timeout,
-maximum travel, command watchdog, or software E-stop aborts and disarms.
+The proposed homing sequence is move away if active, seek, back off until
+released, reapproach slowly, and establish zero. Pi-side sequencing is accepted for later work in [the system design](ROS2_plan.md). Do not implement the former DSP-owned
+sequence solely because this hardware table describes home inputs.
 
-### 5.6 Reserved auxiliary analog inputs
+### 5.6 General analog and digital I/O
 
-| Channel | Pin | First-pass state |
-|---:|---|---|
-| 0 | ADCB0 / HSEC12 | reserved, disabled |
-| 1 | ADCB1 / HSEC14 | reserved, disabled |
-| 2 | ADCB2 / HSEC18 | reserved, disabled |
-| 3 | ADCB3 / HSEC20 | reserved, disabled |
-| 4 | ADCB4 / HSEC24 | reserved, disabled |
-| 5 | ADCB5 / HSEC26 | reserved, disabled |
-| 6 | ADCC2 / HSEC31 | reserved, disabled |
-| 7 | ADCC3 / HSEC33 | reserved, disabled |
+ADCB0–5 (HSEC12/14/18/20/24/26) are active 12-bit analog inputs. DACA/B
+(HSEC9/11) replace the unused ADCA0/1 current-feedback reservations. They use
+ADCA VREFHI; ADCB has its own reference. UI and wire values remain raw counts
+until the two controlCARD SW2 reference positions are confirmed. The
+[wiring table](wiring_table.md#protocol-v5-direct-dock-io) gives all 4 DI / 4 DO /
+6 AI / 2 AO pins, electrical ranges, stop values and loopback connections.
+ADCA2–5 and ADCC2–3 remain reserved, unconfigured inputs.
 
-The protocol reserves telemetry space, but disabled channels report invalid/zero
-and no ADC converter/SOC is enabled for them.
+## 6. Current peripheral budget
 
-## 6. Peripheral and GPIO budget
-
-| Resource | Use | Remaining / gate |
+| Resource | Active use | Remaining / gate |
 |---|---|---|
-| eQEP | eQEP1–3 for axes 0–2 | all used |
-| eCAP | eCAP1–6 for both edges of axes 3–5 | all used |
-| External interrupts | XINT1–4 auxiliary encoders; XINT5 SPI CE mirror | all five used |
-| Input X-BAR | 4–6 auxiliary; 7–12 motor encoders; 13 auxiliary; 14 CE mirror | inputs 1–3 free |
-| CPU2 interrupt sources | eCAP1–6 plus XINT1–4 | rate test required |
-| ePWM | ePWM1A–6A motor PWM | B outputs unused as PWM |
-| Digital GPIO | 53 connected signals | GPIO32, 33, 35–38, 80–82 reserved/spare |
-| ADC | ADCA0–5 plus ADCB0–5/ADCC2–3 reserved | all disabled in current hardware profile |
-| CLB | none | four tiles available only as a measured fallback |
+| eQEP | 1–3, motor axes 0–2 | all used |
+| eCAP | none | available; prior interrupt allocation superseded |
+| External interrupts | XINT5 for SPI CE mirror | XINT1–4 unused |
+| Input X-BAR | input 14 for CE mirror | other inputs unused by current build |
+| CPU2 | dedicated three-channel quadrature polling | external rate test pending |
+| ePWM | 1A–6A motor PWM | B outputs used as GPIO/STBY |
+| General digital | GPIO32/33/80/81 DI; GPIO35–38 DO | GPIO82 spare |
+| ADC | ADCB0–5 | other analog channels unconfigured |
+| DAC | DACA/B on ADCA0/1 | DACC unused |
+| CLA / CLB | none in active endpoint | available |
 
-## 7. Hardware gates
+## 7. Expansion checks (historical checklist, not a fresh two-axis blocker)
+
+These unchecked entries are not a current bench test report. Keep the accepted
+two-axis baseline; complete relevant checks when wiring or enabling additional
+channels. Do not mark an unmeasured channel tested merely because two axes work.
 
 - [ ] Trace each custom-PCB `PWM`, `DIR`, `STBY`, and `EN` connector position.
 - [x] Confirm PCB EN → native EN, PCB STBY → native D2, and native D1 grounded.
