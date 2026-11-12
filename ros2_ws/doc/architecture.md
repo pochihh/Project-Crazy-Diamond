@@ -74,6 +74,12 @@ The duty meter is `dsp.duty`: the DSP's accepted duty command after its arm mask
 also passed to its PWM output routine. It is not measured motor voltage/current
 and does not include feedback from the motor-driver power stage. A live 100%
 reading alone therefore cannot prove that the motor is electrically driven.
+The current MC33926 PCB does not expose its SF fault pin, so a motor-driver fault
+is not included in `dsp.fault`. Disable/re-enable toggles STBY (native D2) and EN,
+which can reset a driver fault latch. The manufacturer's
+[MC33926 datasheet](https://www.nxp.com/docs/en/data-sheet/MC33926.pdf) documents
+latched short-circuit/overtemperature shutdown. Recovery after re-enabling alone
+does not identify whether the original interruption was in software or hardware.
 
 DSP boot resets its existing session/time origin. The host resynchronizes while
 disarmed, latches a host fault, establishes startup zeros and closes any recording
