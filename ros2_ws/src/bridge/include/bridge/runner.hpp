@@ -14,7 +14,7 @@ struct Program {
 };
 inline bool valid_value(uint8_t channel,double value,const Sample& s) {
     if(!std::isfinite(value))return false;
-    if(channel<6)return s.position_configured[channel]&&value>=s.minimum[channel]&&value<=s.maximum[channel];
+    if(channel<6)return s.position_configured[channel]&&valid_reference(s,channel,value);
     if(channel<12)return std::abs(value)<=s.tuning[channel-6].limit;
     return value==std::floor(value)&&value>=0&&value<=(channel<16?1:4095);
 }

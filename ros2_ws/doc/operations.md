@@ -28,6 +28,16 @@ host-only change. Follow the linked DSP guide for CCS RAM/FLASH builds and uploa
 Stop the affected services before replacing an active build, then restart them.
 A bridge restart starts disarmed and captures new startup zeros.
 
+`projects/<project>/bridge.yaml` sets `disarm_on_deadline_miss`. It is a startup-only
+ROS parameter: edit the project YAML and restart the bridge to change it. The
+current `heart_phantom` project sets it to `false`; omitted projects default to
+`true`. Every missed 500 μs deadline is counted and logged in either mode. With
+`true`, a miss also disarms an enabled system (including I/O-only operation).
+With `false`, the worker continues without issuing catch-up bursts; delayed ticks
+can stretch CSV timing. SPI errors, DSP faults/reset recovery, invalid controller
+output and failure to establish realtime scheduling still stop or prevent drive.
+Mock runs always log timing without automatic deadline disarm.
+
 ## Services
 
 | Service | Process / script | Purpose |
@@ -60,14 +70,16 @@ if the default `<hostname>.local` URL is not resolvable by browser clients.
 ## Configuration and manual operation
 
 `projects/heart_phantom/bridge.yaml` selects profiles, calibration, polarity, caps,
-travel bounds and SPI device. For another project, supply `projects/<id>/project.json`, `bridge.yaml` and
+UI slider ranges and SPI device. For another project, supply `projects/<id>/project.json`, `bridge.yaml` and
 `controllers/`, then set `DIAMOND_PROJECT=<id>` for build and both bridge/UI
 services. Profile parameters persist when saved; startup profile selection
 remains in the project YAML.
 
 Both commissioned axes use a 500-cycle encoder,
 ×4 decoding, 91/6 gearbox, 30-tooth module-1 pinion: 321.846662696944 counts/mm.
-Current travel bounds are ±50 mm relative to the captured startup origin.
+The position sliders display ±50 mm relative to the captured startup origin.
+This is not an enforced travel limit; numeric input, ROS and CSV references can
+exceed it. Neither enabling outside that range nor PWM motion across it is blocked.
 
 Disable a motor, move it manually, then Reset zero to establish another origin.
 The other axis can remain enabled. Browser reconnect/axis re-enable preserves

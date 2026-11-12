@@ -12,14 +12,27 @@ int main() {
     // Large tracking errors remain valid controller inputs, including a stationary plant.
     Control research;research.receive({});
     research.apply({Op::axis,0,0,true});research.apply({Op::axis,1,0,true});research.apply({Op::system,0,0,true});
-    for(const double target:{20.0,-20.0,50.0,-50.0}) {
+    for(const double target:{20.0,-20.0,50.0,-50.0,75.0,-75.0}) {
         research.apply({Op::target,0,target});research.apply({Op::target,1,-target});
         const auto output=research.duty();
         assert(research.state.fault==Error::none&&research.mask()==3);
         assert(research.state.reference[0]==target&&research.state.reference[1]==-target);
         for(unsigned a=0;a<2;a++)assert(std::isfinite(output[a])&&std::abs(output[a])<=research.controllers[a].limit);
     }
+    for(unsigned tick=0;tick<20000;tick++) {
+        const auto output=research.duty();
+        assert(output[0]==1&&output[1]==-1&&research.mask()==3&&research.state.fault==Error::none);
+    }
     research.apply({Op::stop});assert(research.mask()==0);
+    Control timing;timing.receive({});timing.apply({Op::axis,0,0,true});timing.apply({Op::system,0,0,true});
+    timing.apply({Op::target,0,75});timing.apply({Op::digital,0,1});
+    timing.deadline_missed(3,false);
+    assert(timing.state.deadlines==3&&timing.mask()==1&&timing.state.target[0]==75&&timing.state.digital_out==1);
+    timing.deadline_missed(0,true);assert(timing.mask()==1);
+    timing.deadline_missed(2,true);
+    assert(timing.state.deadlines==5&&timing.mask()==0&&timing.state.fault==Error::deadline&&!timing.state.digital_out);
+    timing.apply({Op::clear});timing.apply({Op::system,0,0,true});timing.apply({Op::digital,0,1});
+    timing.deadline_missed(1,true);assert(!timing.state.system&&!timing.state.digital_out); // I/O-only operation also stops.
     const auto origin=Clock::time_point{};
     assert(missed_periods(origin,origin+control_period)==0);
     assert(missed_periods(origin,origin+control_period+Clock::duration{1})==1);
@@ -50,7 +63,8 @@ int main() {
     const auto u=c.duty();assert(u[0]<0 && std::abs(c.state.reference[0]-20*dt)<1e-12);
     c.apply({Op::zero,0,0,false,4});assert(c.state.command_error==Error::disabled_required);
     assert(c.state.zero[0]==12345);
-    c.apply({Op::target,0,51,false,5});assert(c.state.command_error==Error::range&&c.state.target[0]==50);
+    c.apply({Op::target,0,75,false,5});assert(c.state.command_error==Error::none&&c.state.target[0]==75);
+    c.apply({Op::target,0,1e300});assert(c.state.command_error==Error::range&&c.state.target[0]==75);
     c.apply({Op::target,0,NAN,false,6});assert(c.state.command_error==Error::range);
     c.apply({Op::axis,0,0,false,7});assert(c.mask()==0);
     sample.position[0]+=1000;sample.timestamp_us=984;c.receive(sample);
@@ -64,8 +78,9 @@ int main() {
     c.apply({Op::record,0,1,false,13});assert(c.state.record_id==1);
     sample.position[0]+=20000;sample.timestamp_us+=1000;c.receive(sample);
     c.apply({Op::axis,0,0,true,14});c.apply({Op::system,0,0,true,15});
-    assert(c.mask()==0&&c.state.command_error==Error::zero_required);
-    c.apply({Op::zero,0,0,false,16});c.apply({Op::system,0,0,true,17});assert(c.mask()==1);
+    assert(c.mask()==1&&c.state.command_error==Error::none&&c.state.target[0]==c.state.position[0]);
+    c.apply({Op::axis,0,0,false});
+    c.apply({Op::zero,0,0,false,16});c.apply({Op::axis,0,0,true,17});assert(c.mask()==1);
     c.apply({Op::mode,0,1,false,18});assert(c.state.command_error==Error::disabled_required);
     c.apply({Op::stop});c.apply({Op::mode,0,1});assert(c.state.mode[0]==1&&c.state.pwm[0]==0);
     c.apply({Op::target,0,1});assert(c.state.command_error==Error::wrong_mode);
@@ -75,8 +90,9 @@ int main() {
     assert(c.state.pwm[0]==0&&c.duty()[0]==0);
     c.apply({Op::pwm,0,0.2});assert(std::abs(c.duty()[0]-0.2)<1e-7);
     c.apply({Op::pwm,0,-0.2});assert(std::abs(c.duty()[0]+0.2)<1e-7);
-    c.state.position[0]=51;c.duty();assert(c.state.fault==Error::travel&&c.mask()==0&&c.state.pwm[0]==0);
-    c.apply({Op::clear});c.dsp_clear_requested=false;c.apply({Op::mode,0,0});assert(c.state.mode[0]==0);
+    c.state.position[0]=75;assert(std::abs(c.duty()[0]+.2)<1e-7);
+    assert(c.state.fault==Error::none&&c.mask()==1&&c.state.pwm[0]==-.2);
+    c.apply({Op::stop});c.apply({Op::mode,0,0});assert(c.state.mode[0]==0&&c.state.target[0]==75);
     Control io;io.receive({});
     io.apply({Op::digital,3,1});assert(io.state.command_error==Error::not_ready);
     io.apply({Op::system,0,0,true});assert(io.mask()==0&&io.state.system);

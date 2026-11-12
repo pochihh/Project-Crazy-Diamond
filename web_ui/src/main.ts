@@ -134,11 +134,11 @@ catch (e) {
 finally {
     sendingAxis = -1;
 } }
-function target(a: number, value: number) { const [minimum, maximum] = bounds(a); if (!Number.isFinite(value) || value < minimum || value > maximum) {
-    message(`Target must be between ${minimum} and ${maximum}.`, true);
+function target(a: number, value: number) { const [minimum, maximum] = bounds(a); const pwm = state?.control_mode?.[a] === 1; if (!Number.isFinite(value) || (pwm && (value < minimum || value > maximum))) {
+    message(pwm ? `Duty must be between ${minimum} and ${maximum}.` : 'Position must be finite.', true);
     return;
 } inputValue(`target-${a}`, value.toFixed(1)); const slider = $<HTMLInputElement>(`slider-${a}`); if (Number(slider.value) !== value)
-    slider.value = String(value); dirtyTargets.delete(a); const pwm = state?.control_mode?.[a] === 1; pendingTargets.set(a, { operation: pwm ? 'pwm' : 'target', value: pwm ? value / 100 : value }); void flushTargets(); }
+    slider.value = String(value); dirtyTargets.delete(a); pendingTargets.set(a, { operation: pwm ? 'pwm' : 'target', value: pwm ? value / 100 : value }); void flushTargets(); }
 const dirtyAnalog = new Set<number>();
 for (let i=0;i<4;i++) $<HTMLInputElement>(`do-set-${i}`).onchange=e=>void act('digital',i,(e.target as HTMLInputElement).checked?1:0);
 for (let i=0;i<2;i++) {
@@ -219,8 +219,8 @@ function render(s: State) {
         for (const id of [`slider-${a}`, `target-${a}`]) {
             const input = $<HTMLInputElement>(id);
             input.disabled = !live;
-            input.min = String(minimum);
-            input.max = String(maximum);
+            if(pwm || id.startsWith('slider-')) { input.min = String(minimum); input.max = String(maximum); }
+            else { input.removeAttribute('min'); input.removeAttribute('max'); }
             input.setAttribute('aria-label', `Axis ${a} target ${pwm ? 'duty percent' : 'position mm'}`);
         }
         $<HTMLButtonElement>(`apply-${a}`).disabled = !live;

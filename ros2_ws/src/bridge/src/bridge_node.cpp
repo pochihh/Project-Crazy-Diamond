@@ -38,6 +38,10 @@ public:
         if(declare_parameter("project_id",std::string(DIAMOND_PROJECT_ID))!=DIAMOND_PROJECT_ID)
             throw std::runtime_error("Project configuration does not match the compiled project ID");
         mock_=declare_parameter("mock",true);
+        rcl_interfaces::msg::ParameterDescriptor deadline_policy;
+        deadline_policy.read_only=true;
+        deadline_policy.description="Project startup policy: disarm on a missed control deadline; timing violations are always logged";
+        disarm_on_deadline_miss_=declare_parameter("disarm_on_deadline_miss",true,deadline_policy);
         device_=declare_parameter("spi_device",std::string("/dev/spidev0.0"));
         directory_=declare_parameter("recording_directory",std::string("recordings"));
         profiles_=std::make_unique<Profiles>(declare_parameter("controller_directory",std::string("projects/")+DIAMOND_PROJECT_ID+"/controllers"));
@@ -53,7 +57,7 @@ public:
             if(position && (!std::isfinite(core_.state.scale[a]) || core_.state.scale[a]<=0 ||
                !std::isfinite(core_.state.minimum[a]) || !std::isfinite(core_.state.maximum[a]) ||
                core_.state.minimum[a]>=core_.state.maximum[a] || core_.state.minimum[a]>0 || core_.state.maximum[a]<0))
-                throw std::runtime_error("Invalid axis calibration or travel range");
+                throw std::runtime_error("Invalid axis calibration or slider range");
             if(!position){core_.state.scale[a]=0;core_.state.minimum[a]=core_.state.maximum[a]=0;}
             controller.sign=declare_parameter(key+"motor_sign",-1.0);
             controller.limit=declare_parameter(key+"duty_limit",1.0);
@@ -123,7 +127,7 @@ public:
         drain(); finish_recording();
     }
 private:
-    bool mock_;
+    bool mock_,disarm_on_deadline_miss_;
     std::string device_,directory_;
     Control core_;
     Runner runner_;
@@ -520,9 +524,8 @@ private:
             else if(error[0])++repeated_errors;
             previous_error=error;
             if(end>deadline) {
-                core_.state.deadlines+=missed;
-                // Mock uses ordinary scheduling; only hardware enforces the RT deadline.
-                if((mask!=0||runner_.owns(core_.state)) && !mock_) core_.fail(Error::deadline);
+                // Every miss is logged above; only the project policy selects automatic disarm.
+                core_.deadline_missed(missed,disarm_on_deadline_miss_&&!mock_);
                 // Do not issue back-to-back SPI frames after an overrun: allow DSP rearm.
                 scheduled=end+control_period;
             } else scheduled=deadline;

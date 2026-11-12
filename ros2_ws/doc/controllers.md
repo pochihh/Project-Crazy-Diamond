@@ -67,9 +67,13 @@ shows the active gains/revision separately from unsent edits and confirms verifi
 Apply results. Subsequent commands from other ROS nodes can still change the
 active configuration; `/bridge/state` and the panel reflect those changes.
 
-Calibration, polarity, ±50 mm bench travel bounds and duty cap are separate
-axis/host settings. The bridge has no tracking-error threshold: a large reference
-error remains an input to the controller and does not itself disable outputs.
+Calibration, polarity, the UI slider range and duty cap are separate axis settings.
+`minimum_mm`/`maximum_mm` set the slider display range (currently ±50 mm), not
+travel protection. Numeric targets, ROS references and CSV programs may exceed
+that range. Enabling outside it is allowed and PWM is not stopped on crossing it.
+Reference values must still be finite and representable as signed 32-bit DSP
+encoder-count references. The bridge has no tracking-error threshold: a large
+reference error remains an input to the controller and does not disable outputs.
 Future application-specific motion protection, such as detecting a stalled axis,
 belongs in a separate safety module; that module is not implemented yet.
 Logging can include input target, applied reference, PID gains,

@@ -38,8 +38,12 @@ flowchart TD
 Controllers receive calibrated reference/feedback and return signed normalized
 DSP duty. The PID preserves count-based gains internally. Its optional reference
 slew limiter is part of the controller block and profile, not bridge transport.
-Direct duty bypasses the entire feedback controller. Calibration, motor polarity,
-travel bounds, duty caps and fault gates remain explicit hardware configuration.
+Direct duty bypasses the entire feedback controller. Calibration, motor polarity
+and duty caps remain axis configuration. `minimum_mm`/`maximum_mm` control slider
+display only; the host does not impose tracking-error or travel protection.
+Deadline disarm is a project startup policy, `disarm_on_deadline_miss`; the current
+bench sets it to false. Missed periods and diagnostic events are always logged.
+SPI/DSP fault gates, numeric validation and explicit Enable/Stop remain active.
 
 ## Ownership and holding
 
@@ -65,6 +69,11 @@ one frame timestamp; there are no independent sensor timestamps.
 adds host control, timing, program and recording state and includes that same
 DSP snapshot. Host `connected` means session synchronization; `bridge_alive` in
 HTTP means the ROS state publisher is recent. Those are separate conditions.
+
+The duty meter is `dsp.duty`: the DSP's accepted duty command after its arm mask,
+also passed to its PWM output routine. It is not measured motor voltage/current
+and does not include feedback from the motor-driver power stage. A live 100%
+reading alone therefore cannot prove that the motor is electrically driven.
 
 DSP boot resets its existing session/time origin. The host resynchronizes while
 disarmed, latches a host fault, establishes startup zeros and closes any recording

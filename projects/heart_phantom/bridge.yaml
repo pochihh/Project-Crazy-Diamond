@@ -2,6 +2,8 @@ bridge:
   ros__parameters:
     project_id: heart_phantom
     mock: true
+    # Always log missed ticks; allow tuning to continue unless SPI/DSP faults.
+    disarm_on_deadline_miss: false
     spi_device: /dev/spidev0.0
     recording_directory: recordings
     controller_directory: projects/heart_phantom/controllers

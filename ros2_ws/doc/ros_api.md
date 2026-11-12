@@ -25,6 +25,9 @@ streams are reliable depth 1. `/data/preview` is best-effort depth 1. Discrete
 `accepted=true` means queued; wait for the matching CommandResult before treating
 it as applied. A hardware acknowledgement is separately exposed in DSP state.
 Continuous inputs have no per-message ack; observe state and `input_rejections`.
+Position references are not restricted by `minimum_mm`/`maximum_mm`; those fields
+describe the UI slider range. Finite values must fit the DSP's signed 32-bit
+encoder-count reference field. PWM duty bounds and SPI/DSP fault gates remain.
 
 `Command.operation` supports `stop`, `system`, `axis`, `mode`, `zero`, `clear`,
 `limit`, `controller_apply`, `profile_load`, `profile_save`, `profile_create`, and

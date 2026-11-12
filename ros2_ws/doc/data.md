@@ -68,6 +68,8 @@ checks the current row again during execution.
 Limit: 32 MB input text and 2,000,000 recognized numeric values. Programs are
 preloaded into immutable memory outside RT. No disk access occurs during playback.
 A library file survives restarts; the loaded program and active run do not.
+Reference columns can exceed the UI slider range; they are checked for finite,
+representable DSP encoder counts rather than against host travel limits.
 
 ```csv
 axis0_reference_mm,axis1_reference_mm,do0
@@ -97,6 +99,8 @@ recording is not implicitly claimed by a runner started with `record=false`.
 
 Manual conflicting writes are rejected while running or holding. Parameter
 changes within the active controller type remain available. Stop All cancels
-runner drive. Link/controller/deadline faults interrupt the runner and do not
-silently skip rows or catch up with bursts. DSP disarm/recovery still follows the
-normal bridge gate. Every reported overrun/missed period remains logged.
+runner drive. Link/controller faults interrupt the runner. A missed deadline only
+interrupts it when the project's `disarm_on_deadline_miss` policy is true; otherwise
+the next row runs on the next tick, stretching elapsed timing without skipping
+rows or catching up with bursts. DSP disarm/recovery still follows the normal
+bridge gate. Every reported overrun/missed period remains logged under either policy.

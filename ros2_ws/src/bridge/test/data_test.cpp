@@ -9,6 +9,9 @@ int main(){
     Program p;p.id=1;p.name="pulse";p.channels={0,1,12};
     for(int i=0;i<40;i++){p.values.push_back(i*.01);p.values.push_back(-i*.01);p.values.push_back(i<10?1:0);}
     validate_program(p,core.state);
+    Program wide;wide.name="outside-slider";wide.channels={0,1};wide.values={75,-75};
+    validate_program(wide,core.state);
+    assert(valid_value(0,75,core.state)&&!valid_value(0,1e300,core.state));
     Runner runner;Command load{};load.op=Op::runner_load;load.program=&p;
     assert(runner.command(load,core)==Error::none);
     Command start{};start.op=Op::runner_start;start.value=2;start.enabled=true;start.record=17;

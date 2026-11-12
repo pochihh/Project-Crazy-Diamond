@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <limits>
 
 namespace diamond {
 constexpr double counts_per_mm = (500.0 * 4 * (91.0 / 6)) / (30 * kPi);
@@ -33,17 +34,15 @@ public:
 struct Program;
 enum class Op { runner_load, runner_start, runner_stop, target, pwm, mode, axis, system, stop, zero, clear, clear_dsp, kp, ki, kd, limit, digital, analog, record, controller, profile };
 // Preserve existing numeric fault codes in recorded CSVs.
-enum class Error { none, busy, disabled_required, range, zero_required, wrong_mode, position_unconfigured, travel, not_ready, numeric=10, deadline, telemetry, dsp, realtime };
+enum class Error { none, busy, disabled_required, range, wrong_mode=5, position_unconfigured, not_ready=8, numeric=10, deadline, telemetry, dsp, realtime };
 inline const char* error_text(Error e) {
     switch(e) {
     case Error::none: return "";
     case Error::busy: return "The runner owns this channel or another operation is pending";
     case Error::disabled_required: return "Disable this axis before changing mode, controller type, zero, or duty limit";
-    case Error::range: return "Value is outside the configured range or duty limit";
-    case Error::zero_required: return "Measured position is outside travel range; reset zero before enabling";
+    case Error::range: return "Value is invalid or outside the protocol/controller output range";
     case Error::wrong_mode: return "Command does not match the selected control mode";
     case Error::position_unconfigured: return "Position control is not configured for this channel";
-    case Error::travel: return "PWM motion exceeded the configured position range";
     case Error::not_ready: return "Stop and clear the host fault before enabling";
     case Error::numeric: return "Non-finite control or telemetry value";
     case Error::deadline: return "2 kHz control deadline missed";
@@ -90,6 +89,12 @@ struct Sample {
     Op input_operation=Op::target;
     double max_cycle_us=0, max_lateness_us=0;
 };
+inline bool valid_reference(const Sample& s,unsigned axis,double value) {
+    // DSP reference telemetry is a signed 32-bit encoder count, not a travel limit.
+    const double counts=s.zero[axis]+value*s.scale[axis];
+    return std::isfinite(value)&&std::isfinite(counts)&&
+        counts>=std::numeric_limits<int32_t>::min()&&counts<=std::numeric_limits<int32_t>::max();
+}
 class Control {
 public:
     Sample state{};
@@ -132,6 +137,10 @@ public:
         state.pwm={};state.digital_out=0;state.analog_out={0,0};
         for(auto& p:controllers) p.reset();
     }
+    void deadline_missed(uint64_t missed,bool disarm) {
+        state.deadlines+=missed;
+        if(missed && disarm && state.system)fail(Error::deadline);
+    }
     void apply(const Command& c) {
         const auto previous_error=state.command_error;
         state.command_error=Error::none;
@@ -173,18 +182,12 @@ private:
             if(c.enabled && (!state.connected || state.fault!=Error::none || dsp_clear_requested)) {
                 state.command_error=Error::not_ready; return;
             }
-            for(unsigned i=0;i<kAxes;i++) {
-                const bool activating=c.op==Op::system ? state.selected[i] : state.system && i==a;
-                if(c.enabled && activating && state.position_configured[i] && (state.position[i]<state.minimum[i] || state.position[i]>state.maximum[i])) {
-                    state.command_error=Error::zero_required; return;
-                }
-            }
             if(c.op==Op::system){state.system=c.enabled;if(!c.enabled){state.digital_out=0;state.analog_out={0,0};}}else state.selected[a]=c.enabled;
             break;
         case Op::target:
             if(!state.position_configured[a]) {state.command_error=Error::position_unconfigured;return;}
             if(state.mode[a]!=0) {state.command_error=Error::wrong_mode; return;}
-            if(!std::isfinite(c.value) || c.value<state.minimum[a] || c.value>state.maximum[a]) {state.command_error=Error::range; return;}
+            if(!valid_reference(state,a,c.value)) {state.command_error=Error::range; return;}
             state.target[a]=c.value; break;
         case Op::pwm:
             if(state.mode[a]!=1) {state.command_error=Error::wrong_mode; return;}
@@ -195,7 +198,7 @@ private:
             if(c.value!=0 && c.value!=1) {state.command_error=Error::range; return;}
             if(c.value==0 && !state.position_configured[a]) {state.command_error=Error::position_unconfigured;return;}
             state.mode[a]=static_cast<uint8_t>(c.value);state.pwm[a]=0;
-            state.target[a]=std::clamp(state.position[a],state.minimum[a],state.maximum[a]);
+            state.target[a]=state.position[a];
             state.reference[a]=state.position[a];controllers[a].reset();break;
         case Op::zero:
             if(!state.position_configured[a]) {state.command_error=Error::position_unconfigured;return;}
@@ -231,7 +234,7 @@ private:
         for(unsigned i=0;i<kAxes;i++) {
             if((before^after)&(1U<<i)) {
                 controllers[i].reset(); state.reference[i]=state.position[i];
-                state.target[i]=std::clamp(state.position[i],state.minimum[i],state.maximum[i]);
+                state.target[i]=state.position[i];
                 state.pwm[i]=0;
             }
         }
@@ -242,7 +245,6 @@ public:
         for(unsigned a=0;a<kAxes;a++) {
             if(!enabled(a)) {controllers[a].reset(); continue;}
             if(state.mode[a]==1) {
-                if(state.position_configured[a] && (state.position[a]<state.minimum[a] || state.position[a]>state.maximum[a])) {fail(Error::travel);return {};}
                 result[a]=static_cast<float>(std::clamp(state.pwm[a],-controllers[a].limit,controllers[a].limit));
                 continue;
             }
