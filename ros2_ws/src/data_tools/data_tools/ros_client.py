@@ -19,7 +19,7 @@ class Operations(Node):
 
     def update(self, state):
         if self.state is not None and state.sample_count < self.state.sample_count:
-            self.results.clear()  # A new bridge process starts command IDs over.
+            self.results.clear()  # Discard acknowledgements belonging to the previous process.
         self.state = state
 
     def result(self, result):

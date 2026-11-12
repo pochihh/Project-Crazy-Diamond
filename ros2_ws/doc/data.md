@@ -42,6 +42,10 @@ inputs and recordings separately. The Data Runner and phantom panel default to
 selecting a saved file. Upload optionally adds/replaces a named file. Replacement
 must be explicit. File names are local basenames ending in `.csv`.
 
+The bench library includes `phantom_example.csv`: a 2-second period, ±1 mm on
+axes 0/1 in phase, with a 5 ms DO0 command pulse at row zero. It is a reusable
+example, not an automatically started experiment.
+
 One data row is **one 0.5 ms tick**, beginning at row zero. No time column, variable
 sample rate, interpolation or fuzzy header matching is used. All recognized
 columns in a row are applied together before controller execution.
