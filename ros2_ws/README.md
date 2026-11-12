@@ -239,3 +239,5 @@ and [v5 protocol](../PLAN/spi_protocol.md).
 unless intentionally passing `--physical`. The existing HTTP/controller/I/O
 integration tests cover the UI adapter and recorder. Physical reset/hang tests
 must be distinguished from host state-machine unit tests in acceptance records.
+
+See [cleanup acceptance results](../PLAN/ROS_BRIDGE_CLEANUP_RESULTS.md) for measured coverage and limitations.
