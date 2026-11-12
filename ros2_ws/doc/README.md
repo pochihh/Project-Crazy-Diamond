@@ -13,6 +13,7 @@ proposals and acceptance reports are evidence, not current interface definitions
 | [Robot packages](robot_packages.md) | Embedded-panel contract and phantom experiments |
 | [Operations](operations.md) | Build, Git deployment, services, configuration and recovery |
 | [Verification](verification.md) | Acceptance tests and measured limitations |
+| [Full-duty stall investigation](duty_stall.md) | Captured commands, arm/fault states and physical signal checks |
 | [DSP hardware guide](../../dsp/f28379d/README.md) | CPU responsibilities, pins, CCS build/upload/debug |
 | [Historical documents](history/README.md) | Previous plans and test evidence |
 
