@@ -154,3 +154,53 @@ def test_dsp_fields_are_relayed_and_result_errors_are_kept_per_command():
     RosClient.result(ros, CommandResult(command_id=1,applied=False,message='Disable axis'))
     RosClient.result(ros, CommandResult(command_id=2,applied=True))
     assert not ros.results[1].applied and ros.results[2].applied
+
+
+def test_data_services_relay_shared_commands_and_preview_batches(tmp_path):
+    from collections import deque
+    from interfaces.msg import CommandResult
+    from interfaces.srv import LoggerCommand, RunnerCommand, LoadCsv, ListPrograms, SignalCatalog
+    class Client:
+        def __init__(self, result): self.response=result; self.requests=[]
+        def service_is_ready(self): return True
+        def call_async(self, request):
+            self.requests.append(request)
+            return SimpleNamespace(done=lambda:True,result=lambda:self.response)
+    ros=FakeRos()
+    ros.state={'last_command_id':19}
+    ros.results={19:CommandResult(command_id=19,applied=True)}
+    ros.data_clients={
+        'logger':Client(LoggerCommand.Response(accepted=True,command_id=19)),
+        'runner':Client(RunnerCommand.Response(accepted=True,command_id=19)),
+        'load_csv':Client(LoadCsv.Response(accepted=True,command_id=19)),
+        'programs':Client(ListPrograms.Response(names=['wave.csv'],sizes=[123])),
+        'signals':Client(SignalCatalog.Response()),
+    }
+    ros.previews=deque([{'sequence':1,'minimum':[0.0],'maximum':[1.0]},
+                        {'sequence':2,'minimum':[0.0],'maximum':[0.0]}])
+    with TestClient(create_app(ros,tmp_path,tmp_path/'missing-ui')) as client:
+        assert client.get('/api/data/programs').json()['names']==['wave.csv']
+        assert client.post('/api/data/logger',json={'operation':'start','signals':['do0']}).status_code==200
+        assert list(ros.data_clients['logger'].requests[-1].signals)==['do0']
+        assert client.post('/api/data/runner',json={'operation':'start','completion':'loop','record':True}).status_code==200
+        request=ros.data_clients['runner'].requests[-1]
+        assert request.completion=='loop' and request.record and request.auto_enable
+        assert client.post('/api/data/load_csv',json={'name':'wave.csv'}).status_code==200
+        assert ros.data_clients['load_csv'].requests[-1].csv==''
+        with client.websocket_connect('/ws/data') as socket:
+            frames=socket.receive_json()['frames']
+            assert len(frames)==2 and frames[0]['maximum']==[1.0]
+
+
+def test_preview_restart_and_robot_expiry():
+    import time
+    from collections import deque
+    from interfaces.msg import DataPreview
+    ros=SimpleNamespace(preview={},previews=deque(maxlen=100))
+    RosClient.update_preview(ros,DataPreview(sequence=100))
+    RosClient.update_preview(ros,DataPreview(sequence=1))
+    assert len(ros.previews)==1
+    ros=SimpleNamespace(state={},received=time.monotonic(),robot={'id':'test'},robot_received=time.monotonic())
+    assert RosClient.snapshot(ros)['robot']=={'id':'test'}
+    ros.robot_received-=3
+    assert RosClient.snapshot(ros)['robot'] is None
