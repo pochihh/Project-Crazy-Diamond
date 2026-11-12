@@ -1,3 +1,8 @@
+> The current ROS topics, services, nested DSP telemetry and independent fault
+> controls are described in [ros2_ws/README.md](../ros2_ws/README.md). Continuous
+> commands now use topics; the older service examples here apply only to discrete
+> operations. DSP firmware remains v5.
+
 # Stage-2 operation
 
 Updated: 2026-11-11. This controls axes 0/1 using protocol-v5 DSP firmware. The filename is retained for existing links.

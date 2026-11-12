@@ -89,7 +89,7 @@ try:
     wait(lambda: latest[0].dsp.digital_out==8 and latest[0].dsp.analog_out[0]==1234)
     assert latest[0].dsp.arm_mask==0
     call('stop')
-    wait(lambda: latest[0].dsp.digital_out==0 and latest[0].dsp.analog_out==[0,0])
+    wait(lambda: latest[0].dsp.digital_out==0 and list(latest[0].dsp.analog_out)==[0,0])
     wait(lambda: latest[0].dsp.sequence in raw)
     assert raw[latest[0].dsp.sequence] == message_to_ordereddict(latest[0].dsp)
     for name in ('telemetry_errors','dropped_samples') + (('deadline_misses',) if args.physical else ()):

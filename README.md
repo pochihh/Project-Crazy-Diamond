@@ -16,7 +16,7 @@ within ±50 mm. Releasing the slider or closing the browser keeps the held targe
 To establish a manual zero: **disable the motor → move it manually → Reset zero**.
 Zero otherwise comes from the position when the host controller starts.
 
-Use Start recording and Stop & save to download CSV. Stop all disables both motors.
+Use Start recording and Stop & save to download CSV. Stop all disables every motor and general I/O output.
 The **Heart Phantom** dashboard has position/PWM control, live plots, duty meters,
 a fixed Stop All header, and an icon sidebar. System shows Pi usage and expandable
 10 Hz ROS topic views. Browser settings control theme, display rates, and performance
