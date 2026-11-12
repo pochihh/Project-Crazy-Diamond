@@ -49,9 +49,10 @@ public:
                !std::isfinite(core_.state.minimum[a]) || !std::isfinite(core_.state.maximum[a]) ||
                core_.state.minimum[a]>=core_.state.maximum[a] || core_.state.minimum[a]>0 || core_.state.maximum[a]<0))
                 throw std::runtime_error("Invalid axis calibration or travel range");
+            if(!position){core_.state.scale[a]=0;core_.state.minimum[a]=core_.state.maximum[a]=0;}
             controller.sign=declare_parameter(key+"motor_sign",-1.0);
             controller.limit=declare_parameter(key+"duty_limit",1.0);
-            if((controller.sign!=1&&controller.sign!=-1)||!(controller.limit>0&&controller.limit<=1))
+            if((position&&controller.sign!=1&&controller.sign!=-1)||!(controller.limit>0&&controller.limit<=1))
                 throw std::runtime_error("Invalid axis tuning");
             const auto profile_name=declare_parameter(key+"controller_profile",position?std::string("bench_pid"):std::string{});
             if(position) {
@@ -404,7 +405,7 @@ private:
                     for(unsigned a=0;a<kAxes;a++) {
                         // shortcut: deterministic first-order plant, use hardware for controller validation.
                         if(mask&(1U<<a)) {
-                            if(core_.state.mode[a]==1) mock_position[a]+=values[a]*core_.pid[a].sign*50*dt*core_.state.scale[a];
+                            if(core_.state.mode[a]==1) mock_position[a]+=values[a]*core_.pid[a].sign*50*dt*(core_.state.position_configured[a]?core_.state.scale[a]:1000);
                             else mock_position[a]+=(core_.state.zero[a]+core_.state.reference[a]*core_.state.scale[a]-mock_position[a])*0.08;
                         }
                         simulated.position[a]=static_cast<int32_t>(std::llround(mock_position[a]));

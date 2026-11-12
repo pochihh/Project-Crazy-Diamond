@@ -31,7 +31,7 @@ public:
 };
 
 enum class Op { target, pwm, mode, axis, system, stop, zero, clear, clear_dsp, kp, ki, kd, limit, digital, analog, record, controller, profile };
-enum class Error { none, disabled_required, range, zero_required, wrong_mode, travel, not_ready, tracking, numeric, deadline, telemetry, dsp, realtime };
+enum class Error { none, disabled_required, range, zero_required, wrong_mode, position_unconfigured, travel, not_ready, tracking, numeric, deadline, telemetry, dsp, realtime };
 inline const char* error_text(Error e) {
     switch(e) {
     case Error::none: return "";
@@ -39,6 +39,7 @@ inline const char* error_text(Error e) {
     case Error::range: return "Value is outside the configured range or duty limit";
     case Error::zero_required: return "Measured position is outside travel range; reset zero before enabling";
     case Error::wrong_mode: return "Command does not match the selected control mode";
+    case Error::position_unconfigured: return "Position control is not configured for this channel";
     case Error::travel: return "PWM motion exceeded the configured position range";
     case Error::not_ready: return "Stop and clear the host fault before enabling";
     case Error::tracking: return "Tracking error exceeded configured limit";
@@ -119,8 +120,8 @@ public:
         state.number++;
     }
     void fail(Error error) {
-        state.fault=error; state.system=false; state.selected={false,false};
-        state.pwm={0,0};state.digital_out=0;state.analog_out={0,0};
+        state.fault=error; state.system=false; state.selected={};
+        state.pwm={};state.digital_out=0;state.analog_out={0,0};
         for(auto& p:pid) p.reset();
     }
     void apply(const Command& c) {
@@ -150,7 +151,7 @@ private:
         }
         if (a>=kAxes) { state.command_error=Error::range; return; }
         switch(c.op) {
-        case Op::stop: state.system=false; state.selected={false,false}; state.pwm={0,0}; state.digital_out=0;state.analog_out={0,0};break;
+        case Op::stop: state.system=false; state.selected={}; state.pwm={}; state.digital_out=0;state.analog_out={0,0};break;
         case Op::clear:
             if (mask()!=0) { state.command_error=Error::disabled_required; return; }
             if(state.telemetry.fault) {state.command_error=Error::dsp;return;}
@@ -173,7 +174,7 @@ private:
             if(c.op==Op::system){state.system=c.enabled;if(!c.enabled){state.digital_out=0;state.analog_out={0,0};}}else state.selected[a]=c.enabled;
             break;
         case Op::target:
-            if(!state.position_configured[a]) {state.command_error=Error::not_ready;return;}
+            if(!state.position_configured[a]) {state.command_error=Error::position_unconfigured;return;}
             if(state.mode[a]!=0) {state.command_error=Error::wrong_mode; return;}
             if(!std::isfinite(c.value) || c.value<state.minimum[a] || c.value>state.maximum[a]) {state.command_error=Error::range; return;}
             state.target[a]=c.value; break;
@@ -184,12 +185,12 @@ private:
         case Op::mode:
             if(enabled(a)) {state.command_error=Error::disabled_required; return;}
             if(c.value!=0 && c.value!=1) {state.command_error=Error::range; return;}
-            if(c.value==0 && !state.position_configured[a]) {state.command_error=Error::not_ready;return;}
+            if(c.value==0 && !state.position_configured[a]) {state.command_error=Error::position_unconfigured;return;}
             state.mode[a]=static_cast<uint8_t>(c.value);state.pwm[a]=0;
             state.target[a]=std::clamp(state.position[a],state.minimum[a],state.maximum[a]);
             state.reference[a]=state.position[a];pid[a].reset();break;
         case Op::zero:
-            if(!state.position_configured[a]) {state.command_error=Error::not_ready;return;}
+            if(!state.position_configured[a]) {state.command_error=Error::position_unconfigured;return;}
             if(enabled(a)) {state.command_error=Error::disabled_required; return;}
             if(!state.connected) {state.command_error=Error::not_ready; return;}
             state.zero[a]=state.telemetry.position[a];
@@ -198,7 +199,7 @@ private:
             pid[a].reset(); break;
         case Op::record: state.record_id=static_cast<uint64_t>(c.value); break;
         case Op::controller:
-            if(!state.position_configured[a]) {state.command_error=Error::not_ready;return;}
+            if(!state.position_configured[a]) {state.command_error=Error::position_unconfigured;return;}
             if(enabled(a)&&c.controller.type!=pid[a].config.type) {state.command_error=Error::disabled_required;return;}
             if(!valid_controller(c.controller)) {state.command_error=Error::range;return;}
             pid[a].configure(c.controller,enabled(a));

@@ -25,7 +25,7 @@ int main() {
     a.value=2;core.apply(Command{Op::pwm,5,2,false,0,{}, {},4,true});
     assert(core.state.input_rejections==1&&core.state.input_error==Error::range);
     assert(core.state.command_error==discrete_error); // Topic rejection cannot overwrite a service result.
-    core.apply({Op::stop});core.apply({Op::mode,5,0});assert(core.state.command_error==Error::not_ready);
+    core.apply({Op::stop});core.apply({Op::mode,5,0});assert(core.state.command_error==Error::position_unconfigured);
     t.fault=PCD_FAULT_TIMEOUT;core.receive(t);core.apply({Op::clear});
     assert(core.state.fault==Error::dsp&&core.state.command_error==Error::dsp);
     core.apply({Op::clear_dsp});assert(core.dsp_clear_requested&&core.state.fault==Error::dsp);

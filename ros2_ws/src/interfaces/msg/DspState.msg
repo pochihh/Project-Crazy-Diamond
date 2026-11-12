@@ -1,4 +1,5 @@
-# Decoded protocol-v5 telemetry. Names, units and values match PcdTelemetry.
+# Decoded protocol-v5 telemetry. Units and values match PcdTelemetry.
+# Only watchdogs is renamed to command_timeout_count below.
 # No host enable requests, calibrated units or host error counters belong here.
 uint32 timestamp_us
 uint32 sequence

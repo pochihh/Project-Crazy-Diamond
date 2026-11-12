@@ -317,14 +317,14 @@ function renderResources(s: State, live: boolean) {
     }
 }
 function receive(s: State) {
-    if (s.input_rejections > lastInputRejections)
-        message(`${s.input_topic} channel ${s.input_channel}: ${s.input_error}`, true);
-    lastInputRejections = s.input_rejections;
     const now = performance.now(), time = s.timestamp_us / 1000;
     if (s.ui_instance && retiredStreams.has(s.ui_instance))
         return;
     if (s.ui_instance === state?.ui_instance && (s.ui_sequence ?? 0) < (state?.ui_sequence ?? 0))
         return;
+    if (s.input_rejections > lastInputRejections)
+        message(`${s.input_topic} channel ${s.input_channel}: ${s.input_error}`, true);
+    lastInputRejections = s.input_rejections;
     const newStream = !!state?.ui_instance && s.ui_instance !== state.ui_instance;
     if (newStream)
         retiredStreams.add(state!.ui_instance!);
