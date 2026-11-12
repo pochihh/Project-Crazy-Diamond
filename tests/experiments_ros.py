@@ -87,7 +87,7 @@ def main():
             assert state.dsp.arm_mask==0
         for source in ['sine','csv']:
             call('phantom',PhantomCommand.Request(operation='start',source=source,period_s=.25,
-                 amplitude_mm=[.3,.3],offset_mm=[0.,0.],phase_deg=90.,pulse_width_ms=5.,
+                 amplitude_mm=[.3,.3],offset_mm=[0.,0.],phase_deg=180.,pulse_width_ms=5.,
                  completion='loop',filename='acceptance-wave.csv',signals=signal_names))
             wait(lambda:state.runner_cycles>=2)
             call('phantom',PhantomCommand.Request(operation='stop'))

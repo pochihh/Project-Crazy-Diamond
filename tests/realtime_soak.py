@@ -101,7 +101,7 @@ def main():
             with urlopen(url+'/api/data/signals', timeout=10) as response:
                 signals = [item['name'] for item in json.load(response)['signals']]
             phantom('start', source='sine', period_s=.25, amplitude_mm=[.3,.3],
-                    offset_mm=[0,0], phase_deg=90, pulse_width_ms=5, completion='loop', signals=signals)
+                    offset_mm=[0,0], phase_deg=180, pulse_width_ms=5, completion='loop', signals=signals)
         else:
             command('system', enabled=True)
             command('record_start')

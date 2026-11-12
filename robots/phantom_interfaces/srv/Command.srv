@@ -5,6 +5,7 @@ float64[2] amplitude_mm [1.0, 1.0]
 float64[2] offset_mm [0.0, 0.0]
 float64 phase_deg
 float64 pulse_width_ms 5.0
+float64 approach_speed_mm_s 5.0
 string completion
 string filename
 string csv

@@ -44,6 +44,7 @@ and `/command` endpoints. ROS clients call `/phantom/command` directly.
 | `amplitude_mm[2]`, `offset_mm[2]` | Independent axis amplitudes/centers |
 | `phase_deg` | Axis 1 phase relative to axis 0; default 0° |
 | `pulse_width_ms` | DO0 high at each period start; default 5 ms = 10 ticks; zero disables |
+| `approach_speed_mm_s` | Sine startup move to zero, default 5 mm/s; positive and finite |
 | `completion` | `hold`, `stop`, `loop`; panel defaults to loop |
 | `filename` | Saved file from the shared `data/programs/` library |
 | `csv`, `overwrite` | Optional upload text and explicit replacement flag |
@@ -51,8 +52,11 @@ and `/command` endpoints. ROS clients call `/phantom/command` directly.
 
 Sine equations are `offset0 + amplitude0*sin(2πt/T)` and
 `offset1 + amplitude1*sin(2πt/T + phase)`. One period is prepared outside RT and
-executed by the generic runner. Phase/offset can introduce a first-row step;
-no approach trajectory is inserted. Pulse width is rounded to ticks and must be
+executed by the generic runner. Both first samples must be zero: nonzero starts
+are rejected before changing outputs. With zero offsets, phases 0° and 180°
+are valid; a 90° phase is not. An offset/phase combination is allowed only if
+its first sample is also zero. Roundoff within 1e-9 mm is normalized to zero.
+Pulse width is rounded to ticks and must be
 shorter than the period. The panel reports actual quantized timing in its state.
 DSP actuation still has SPI/firmware timing granularity; host tick timing alone
 is not an oscilloscope measurement of a physical pin.
@@ -62,9 +66,33 @@ section. It requires exactly the three recognized channels
 `axis0_reference_mm,axis1_reference_mm,do0`. Extra unknown columns warn/ignore;
 other recognized outputs are rejected for this phantom mode.
 
-Start requires a connected, fault-free bridge with no active run/recording. It
-loads the program, prepares logging, enables axes 0/1 and starts row zero and
-recording together. Stop cancels playback, disables the owned motors, clears DO0
+Start requires fresh, connected, fault-free bridge feedback with no active
+run/recording. Sine Start first disables axes 0/1, takes their measured positions,
+and loads a separate `phantom-approach-zero` program into the existing RT runner.
+Its first row is the measured position; synchronized linear ramps reach zero
+without either axis exceeding `approach_speed_mm_s`. DO0 stays low and no
+experiment recording runs during preparation. The robot then holds zero until
+both measured positions remain within ±0.1 mm for 0.3 seconds. Failure to settle
+within the planned ramp duration plus ten seconds cancels Start and requests
+runner Stop. Approach programs are limited to 300 seconds.
+
+After settling, the robot stops the approach, loads the sine and starts row zero,
+DO0 and recording together. The zero coordinate is the bridge's existing startup
+or manually reset zero; this procedure does not reset encoders or define a new
+zero. PID gains and profile reference shaping stay in force. A sine still starts
+with its specified velocity; this removes the initial position step, not the
+power demand of a fast waveform or the unresolved SPI timing issue.
+
+The panel reports preparation/settling phases while the Start request is pending
+and leaves Stop available. ROS clients can identify the approach through the
+bridge's program name; `/phantom/command` returns success once the experiment has
+started. Allow up to 360 seconds for a sine Start response. A Stop from the robot,
+generic runner or Stop All cancels preparation and prevents a delayed Start.
+Stale feedback, bridge restart or a bridge fault also cancels preparation.
+
+CSV Start continues to load its specified rows and start recording immediately;
+the sine zero-start rule does not rewrite uploaded experiments.
+Stop cancels playback, disables the owned motors, clears DO0
 and saves the associated CSV. Repeated Start does not replace an active run.
 An explicit Stop during preparation cancels the pending Start.
 
