@@ -48,10 +48,12 @@ and history. Save writes YAML atomically; other axes keep their copies until an
 explicit reload. Save as creates a new file. UI profile selection is session-only;
 startup assignments live in `bridge.yaml`.
 
-Calibration, polarity, ±50 mm bench travel bounds, duty cap and the current 15 mm
-tracking-error trip are separate axis/host settings. They are not hidden filters.
-A large passthrough step can hit the tracking trip; plan experiments using those
-explicit settings. Logging can include input target, applied reference, PID gains,
+Calibration, polarity, ±50 mm bench travel bounds and duty cap are separate
+axis/host settings. The bridge has no tracking-error threshold: a large reference
+error remains an input to the controller and does not itself disable outputs.
+Future application-specific motion protection, such as detecting a stalled axis,
+belongs in a separate safety module; that module is not implemented yet.
+Logging can include input target, applied reference, PID gains,
 limiter mode/rate, requested duty and DSP-reported duty. Initial axis configuration
 is also included in CSV comments.
 

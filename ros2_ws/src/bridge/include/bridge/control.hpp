@@ -32,7 +32,8 @@ public:
 
 struct Program;
 enum class Op { runner_load, runner_start, runner_stop, target, pwm, mode, axis, system, stop, zero, clear, clear_dsp, kp, ki, kd, limit, digital, analog, record, controller, profile };
-enum class Error { none, busy, disabled_required, range, zero_required, wrong_mode, position_unconfigured, travel, not_ready, tracking, numeric, deadline, telemetry, dsp, realtime };
+// Preserve existing numeric fault codes in recorded CSVs.
+enum class Error { none, busy, disabled_required, range, zero_required, wrong_mode, position_unconfigured, travel, not_ready, numeric=10, deadline, telemetry, dsp, realtime };
 inline const char* error_text(Error e) {
     switch(e) {
     case Error::none: return "";
@@ -44,7 +45,6 @@ inline const char* error_text(Error e) {
     case Error::position_unconfigured: return "Position control is not configured for this channel";
     case Error::travel: return "PWM motion exceeded the configured position range";
     case Error::not_ready: return "Stop and clear the host fault before enabling";
-    case Error::tracking: return "Tracking error exceeded configured limit";
     case Error::numeric: return "Non-finite control or telemetry value";
     case Error::deadline: return "2 kHz control deadline missed";
     case Error::telemetry: return "Invalid, stale, or unavailable DSP telemetry";
@@ -94,7 +94,6 @@ class Control {
 public:
     Sample state{};
     std::array<AxisController,6> controllers{};
-    double tracking_limit_mm=15;
     bool initialized=false, dsp_clear_requested=false;
     uint16_t mask() const {
         if (!state.system || state.fault!=Error::none || !state.connected) return 0;
@@ -249,8 +248,6 @@ public:
             }
             const double output=controllers[a].step(state.target[a],state.position[a],state.scale[a],dt);
             state.reference[a]=controllers[a].reference_mm;
-            const double error=(state.reference[a]-state.position[a])*state.scale[a];
-            if(std::abs(error)>tracking_limit_mm*state.scale[a]) {fail(Error::tracking); return {};}
             if(!std::isfinite(output)) {fail(Error::numeric);return {};}
             result[a]=static_cast<float>(std::clamp(output,-controllers[a].limit,controllers[a].limit));
             if(!std::isfinite(result[a])) {fail(Error::numeric); return {};}

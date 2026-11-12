@@ -9,6 +9,17 @@ int main() {
     AxisController unshaped;unshaped.step(10,0,1,dt);assert(unshaped.reference_mm==10);
     unshaped.config.slew_enabled=true;unshaped.reset();unshaped.step(10,0,1,dt);
     assert(unshaped.reference_mm==20*dt);
+    // Large tracking errors remain valid controller inputs, including a stationary plant.
+    Control research;research.receive({});
+    research.apply({Op::axis,0,0,true});research.apply({Op::axis,1,0,true});research.apply({Op::system,0,0,true});
+    for(const double target:{20.0,-20.0,50.0,-50.0}) {
+        research.apply({Op::target,0,target});research.apply({Op::target,1,-target});
+        const auto output=research.duty();
+        assert(research.state.fault==Error::none&&research.mask()==3);
+        assert(research.state.reference[0]==target&&research.state.reference[1]==-target);
+        for(unsigned a=0;a<2;a++)assert(std::isfinite(output[a])&&std::abs(output[a])<=research.controllers[a].limit);
+    }
+    research.apply({Op::stop});assert(research.mask()==0);
     const auto origin=Clock::time_point{};
     assert(missed_periods(origin,origin+control_period)==0);
     assert(missed_periods(origin,origin+control_period+Clock::duration{1})==1);
@@ -48,7 +59,7 @@ int main() {
     assert(c.state.zero[0]==13345&&c.state.position[0]==0&&c.state.target[0]==0&&c.state.reference[0]==0);
     c.apply({Op::axis,0,0,true,9});assert(c.state.zero[0]==13345);
     c.apply({Op::stop,0,0,false,10});assert(c.mask()==0&&!c.state.selected[0]&&!c.state.system);
-    c.fail(Error::tracking);c.apply({Op::system,0,0,true,11});assert(c.mask()==0&&c.state.command_error==Error::not_ready);
+    c.fail(Error::telemetry);c.apply({Op::system,0,0,true,11});assert(c.mask()==0&&c.state.command_error==Error::not_ready);
     c.apply({Op::clear,0,0,false,12});c.dsp_clear_requested=false;assert(c.state.fault==Error::none&&!c.state.system);
     c.apply({Op::record,0,1,false,13});assert(c.state.record_id==1);
     sample.position[0]+=20000;sample.timestamp_us+=1000;c.receive(sample);

@@ -40,7 +40,6 @@ public:
         mock_=declare_parameter("mock",true);
         device_=declare_parameter("spi_device",std::string("/dev/spidev0.0"));
         directory_=declare_parameter("recording_directory",std::string("recordings"));
-        core_.tracking_limit_mm=declare_parameter("tracking_limit_mm",15.0);
         profiles_=std::make_unique<Profiles>(declare_parameter("controller_directory",std::string("projects/")+DIAMOND_PROJECT_ID+"/controllers"));
         for(unsigned a=0;a<kAxes;a++) {
             const auto key="axis"+std::to_string(a)+".";
@@ -67,8 +66,6 @@ public:
                 core_.state.profiles[a]=profile.id;
             }
         }
-        if(!(core_.tracking_limit_mm>0&&core_.tracking_limit_mm<=100))
-            throw std::runtime_error("Invalid motion limits");
         fs::create_directories(directory_);
         recorder_=std::make_unique<Recorder>(directory_);
         diagnostics_.open(fs::path(directory_)/"realtime-events.jsonl",std::ios::app);
