@@ -6,9 +6,10 @@ template<class F> void rejected(F f){bool failed=false;try{f();}catch(const std:
 int main() {
     const auto dir=std::filesystem::temp_directory_path()/("pcd-profiles-"+std::to_string(getpid()));
     std::filesystem::remove_all(dir);Profiles profiles(dir);
-    ControllerConfig c;
+    ControllerConfig c;c.slew_enabled=true;c.slew_rate_mm_s=123.45;
     profiles.save("shared",c,true);
     const auto first=profiles.load("shared");assert(first.controller.parameters==c.parameters);
+    assert(first.controller.slew_enabled&&first.controller.slew_rate_mm_s==123.45);
     rejected([&]{profiles.save("shared",c,true);});
     c.parameters[0]=0.0006;profiles.save("shared",c,false);
     assert(profiles.load("shared").controller.parameters[0]==0.0006);

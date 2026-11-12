@@ -274,6 +274,7 @@ private:
         if(pending_program_||!program_||runner_.owns(latest_)||latest_.command_id!=next_command_){out.message="Load a program, stop any active run, and wait for pending commands";return;}
         if(req.completion!="hold"&&req.completion!="stop"&&req.completion!="loop"){out.message="Completion must be hold, stop or loop";return;}
         if(!latest_.connected||latest_.fault!=Error::none){out.message="Connect and clear the host fault before starting";return;}
+        c.check_stop=true;c.stop_count=req.check_stop_count?req.expected_stop_count:latest_.stop_count;
         c.op=Op::runner_start;c.value=req.completion=="hold"?0:req.completion=="stop"?1:2;c.enabled=req.auto_enable;
         if(req.record) {
             try{recorder_->start(++record_id_,req.signals,latest_,DIAMOND_PROJECT_ID);c.record=record_id_;}
@@ -366,7 +367,7 @@ private:
         if(s.telemetry_count!=last_dsp_sample_) {dsp_publisher_->publish(d);last_dsp_sample_=s.telemetry_count;}
         msg.recording=recorder_->active();msg.recording_file=recorder_->filename;msg.recorded_samples=recorder_->samples;
         msg.recording_error=recorder_->error;msg.recorded_signals=recorder_->selected;
-        msg.program_id=s.program_id;msg.program_rows=s.runner_rows;
+        msg.stop_count=s.stop_count;msg.program_id=s.program_id;msg.program_rows=s.runner_rows;
         const auto* p=pending_program_&&pending_program_->id==s.program_id?pending_program_.get():program_.get();
         if(p&&p->id==s.program_id)msg.program_name=p->name;
         msg.runner_state=s.runner_state;msg.runner_row=s.runner_row;msg.runner_cycles=s.runner_cycles;

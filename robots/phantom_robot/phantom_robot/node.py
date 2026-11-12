@@ -51,6 +51,7 @@ class Phantom(Operations):
                 raise ValueError('Bridge must be connected and fault-free')
             if self.state.runner_state in (1,2) or self.state.recording:
                 raise ValueError('Stop the active run/recording before starting a phantom experiment')
+            stop_count=self.state.stop_count
             completion=req.completion or ('loop' if req.source=='sine' else 'hold')
             if completion not in ('hold','stop','loop'):raise ValueError('Choose hold, stop or loop')
             config=dict(message_to_ordereddict(req));config.pop('csv',None)
@@ -65,7 +66,8 @@ class Phantom(Operations):
             if generation!=self.generation:raise ValueError('Start cancelled by Stop')
             # This request starts the recorder and first sequence row at one worker boundary.
             await self.request(self.runner,RunnerCommand.Request(operation='start',completion=completion,
-                               auto_enable=True,record=True,signals=list(req.signals) or DEFAULT_SIGNALS))
+                               auto_enable=True,record=True,signals=list(req.signals) or DEFAULT_SIGNALS,
+                               check_stop_count=True,expected_stop_count=stop_count))
             if generation!=self.generation:
                 await self.request(self.runner,RunnerCommand.Request(operation='stop'))
                 raise ValueError('Start cancelled by Stop')
@@ -114,7 +116,7 @@ def app_for(node):
     @app.post('/command')
     async def command(body:Request):
         if len(body.amplitude_mm)!=2 or len(body.offset_mm)!=2:raise HTTPException(422,'Exactly two axis values required')
-        result=await response(node.self_client.call_async(PhantomCommand.Request(**body.model_dump())))
+        result=await response(node.self_client.call_async(PhantomCommand.Request(**body.dict())))
         if not result['accepted']:raise HTTPException(409,result['message'])
         return result
     app.mount('/',StaticFiles(directory=Path(__file__).parent/'static',html=True))

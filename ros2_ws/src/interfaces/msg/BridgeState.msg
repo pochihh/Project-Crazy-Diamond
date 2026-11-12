@@ -54,3 +54,4 @@ string runner_error
 uint16 runner_axis_mask
 uint16 runner_do_mask
 uint16 runner_ao_mask
+uint64 stop_count

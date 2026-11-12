@@ -33,6 +33,8 @@ int main(){
     core.apply({Op::clear});
     Program bad=p;bad.axes=bad.digital=bad.analog=0;bad.channels={0,6};bad.values={0,.1};
     bool rejected=false;try{validate_program(bad,core.state);}catch(...){rejected=true;}assert(rejected);
+    start.check_stop=true;start.stop_count=core.state.stop_count;core.apply({Op::stop});
+    assert(runner.command(start,core)==Error::not_ready&&!core.mask());
     const auto dir=std::filesystem::temp_directory_path()/("pcd-data-"+std::to_string(getpid()));std::filesystem::create_directories(dir);
     Recorder recorder(dir);recorder.start(1,{"axis0_position_mm","do0_command"},core.state,"test");
     auto sample=core.state;sample.connected=true;sample.record_id=1;

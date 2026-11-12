@@ -47,7 +47,7 @@ public:
         return false;
     }
     void stop(Control& core,uint8_t state=3,Error error=Error::none) {
-        auto& s=core.state;
+        auto& s=core.state;++s.stop_count;
         if(owns(s)) {
             for(unsigned a=0;a<6;a++)if(s.runner_axes&(1U<<a))core.apply({Op::axis,a,0,false});
             s.digital_out&=~s.runner_digital;
@@ -66,6 +66,7 @@ public:
             s.runner_state=0;s.runner_row=0;s.runner_cycles=0;s.runner_error=Error::none;return Error::none;
         }
         if(!program_||owns(s))return Error::busy;
+        if(c.check_stop&&c.stop_count!=s.stop_count)return Error::not_ready;
         if(!s.connected||s.fault!=Error::none||core.dsp_clear_requested)return Error::not_ready;
         if(c.value<0||c.value>2)return Error::range;
         // Stage the mode/enable changes so a rejected Start changes no output selection.

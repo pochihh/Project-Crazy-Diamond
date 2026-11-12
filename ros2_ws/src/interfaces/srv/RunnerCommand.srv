@@ -3,6 +3,8 @@ string completion
 bool record
 bool auto_enable
 string[] signals
+bool check_stop_count
+uint64 expected_stop_count
 ---
 bool accepted
 uint64 command_id

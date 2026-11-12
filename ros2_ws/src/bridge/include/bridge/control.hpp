@@ -59,10 +59,11 @@ struct Command {
     uint64_t order=0;
     bool input=false;
     const Program* program=nullptr;
-    uint64_t record=0;
+    uint64_t record=0,stop_count=0;
+    bool check_stop=false;
 };
 struct Sample {
-    uint64_t program_id=0,runner_rows=0,runner_row=0,runner_cycles=0;
+    uint64_t stop_count=0,program_id=0,runner_rows=0,runner_row=0,runner_cycles=0;
     uint8_t runner_state=0,runner_completion=0;
     uint16_t runner_axes=0,runner_digital=0,runner_analog=0;
     Error runner_error=Error::none;
@@ -159,7 +160,7 @@ private:
         }
         if (a>=kAxes) { state.command_error=Error::range; return; }
         switch(c.op) {
-        case Op::stop: state.system=false; state.selected={}; state.pwm={}; state.digital_out=0;state.analog_out={0,0};break;
+        case Op::stop: ++state.stop_count;state.system=false; state.selected={}; state.pwm={}; state.digital_out=0;state.analog_out={0,0};break;
         case Op::clear:
             if (mask()!=0) { state.command_error=Error::disabled_required; return; }
             if(state.telemetry.fault) {state.command_error=Error::dsp;return;}
