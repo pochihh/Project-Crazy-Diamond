@@ -9,8 +9,9 @@ from pathlib import Path
 import time
 import rclpy
 from rclpy.node import Node
+from phantom_interfaces.srv import Command as PhantomCommand
 from interfaces.msg import BridgeState, CommandResult, PositionCommand
-from interfaces.srv import Command, LoadCsv, ListPrograms, RunnerCommand, LoggerCommand, PhantomCommand
+from interfaces.srv import Command, LoadCsv, ListPrograms, RunnerCommand, LoggerCommand
 
 
 def main():

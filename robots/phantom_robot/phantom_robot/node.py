@@ -10,7 +10,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from rosidl_runtime_py.convert import message_to_ordereddict
 from interfaces.msg import RobotPanel
-from interfaces.srv import PhantomCommand, RunnerCommand, LoadCsv, LoadProgram, ListPrograms
+from phantom_interfaces.srv import Command as PhantomCommand
+from interfaces.srv import RunnerCommand, LoadCsv, LoadProgram, ListPrograms
 from data_tools.ros_client import Operations
 from phantom_robot.waveform import sine, DEFAULT_SIGNALS
 
