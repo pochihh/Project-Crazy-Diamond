@@ -15,11 +15,12 @@ class FakeRos:
 
 
 def test_snapshots_order_http_and_websocket_without_changing_control_frames():
-    ros = SimpleNamespace(sequence=0, instance='ui-process', state={}, received=0, robot={}, robot_received=0)
+    ros = SimpleNamespace(sequence=0, instance='ui-process', state={}, received=0, robot={}, robot_received=0, results={})
     message = BridgeState()
     message.sample_count = 100
     RosClient.update(ros, message)
     first = RosClient.snapshot(ros)
+    ros.results[1] = 'old bridge acknowledgement'
     message.sample_count = 1  # Host-controller restart still advances the UI sequence.
     RosClient.update(ros, message)
     second = RosClient.snapshot(ros)
@@ -27,6 +28,7 @@ def test_snapshots_order_http_and_websocket_without_changing_control_frames():
     assert first['ui_sequence'] == 1 and second['ui_sequence'] == 2
     assert first['sample_count'] == 100 and second['sample_count'] == 1
     assert second['bridge_alive']
+    assert not ros.results
 
 
 def test_offline_commands_and_input_bounds(tmp_path):

@@ -18,6 +18,8 @@ class Operations(Node):
         self.create_timer(.05, self.poll, callback_group=self.group)
 
     def update(self, state):
+        if self.state is not None and state.sample_count < self.state.sample_count:
+            self.results.clear()  # A new bridge process starts command IDs over.
         self.state = state
 
     def result(self, result):

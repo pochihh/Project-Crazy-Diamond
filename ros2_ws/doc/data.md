@@ -24,7 +24,7 @@ Files are written outside RT to `recordings/YYYY-MM-DD_HH-mm-ss.csv`, using Pi
 local time. A collision adds `_1`, `_2`, etc.; no file is overwritten. CSV comments
 include timezone offset, project, period, calibration, origin, bounds and profile.
 Select controller gain/limiter signals to preserve live parameter changes per row.
-Stop closes/flushed files before download. DSP reset closes the current segment.
+Stop closes and flushes files before download. DSP reset closes the current segment.
 A runner fault closes its associated recording. An independent logger can continue
 recording valid fault-state feedback until explicitly stopped. Closed recordings
 do not restart automatically.

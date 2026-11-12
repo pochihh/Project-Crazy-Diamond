@@ -69,6 +69,8 @@ class RosClient(Node):
             del self.results[next(iter(self.results))]
 
     def update(self, message):
+        if message.sample_count < self.state.get('sample_count', 0):
+            self.results.clear()
         self.sequence += 1
         self.state = dict(message_to_ordereddict(message), ui_sequence=self.sequence, ui_instance=self.instance)
         self.received = time.monotonic()
