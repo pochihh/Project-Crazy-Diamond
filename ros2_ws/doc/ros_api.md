@@ -37,6 +37,15 @@ compiled `controller_type`. Set `set_reference=true` to apply `slew_enabled` and
 `slew_rate_mm_s`; otherwise existing reference configuration is preserved. Save
 operations require the current `controller_revision` to avoid saving stale state.
 
+For controller/profile/gain/duty-limit commands, `CommandResult.has_controller`
+is true and its `axis`, `controller_revision`, `controller` and `duty_limit` fields
+are read from the RT controller immediately after that command (also on rejection).
+These fields describe that exact command boundary even if another node changes
+the axis again before the result arrives. `/bridge/state.controllers` describes
+the latest active settings. The HTTP command response includes
+`controller_readback` and verifies explicitly requested values before returning
+success; a missing or mismatched read-back is an error, not a successful Apply.
+
 ## Logger and runner
 
 | Service | Type | Request / response |

@@ -252,7 +252,30 @@ def create_app(ros, recordings: Path, static: Path, project=None):
             applied = ros.results.pop(result.command_id)
             if not applied.applied:
                 raise HTTPException(409, applied.message)
-            return {'command_id': result.command_id, 'state': ros.snapshot()}
+            response = {'command_id': result.command_id, 'state': ros.snapshot()}
+            if body.operation in ('controller_apply', 'profile_load', 'profile_save', 'profile_create', 'kp', 'ki', 'kd', 'limit'):
+                if not applied.has_controller or applied.axis != body.axis:
+                    raise HTTPException(502, 'Command acknowledged without controller read-back')
+                actual = dict(message_to_ordereddict(applied.controller))
+                parameters = dict(zip(actual['parameter_names'], actual['parameter_values']))
+                matches = True
+                if body.operation == 'controller_apply':
+                    matches = actual['type'] == body.controller_type and parameters == body.parameters
+                    if body.set_reference:
+                        matches = matches and actual['slew_enabled'] == body.slew_enabled and actual['slew_rate_mm_s'] == body.slew_rate_mm_s
+                elif body.operation in ('kp', 'ki', 'kd'):
+                    matches = parameters.get(body.operation) == body.value
+                elif body.operation == 'limit':
+                    matches = applied.duty_limit == body.value
+                else:
+                    matches = actual['id'] == body.profile
+                if not matches:
+                    raise HTTPException(409, 'Controller read-back differs from the request; inspect the active settings')
+                response['controller_readback'] = {
+                    'axis': applied.axis, 'controller_revision': applied.controller_revision,
+                    'controller': actual, 'duty_limit': applied.duty_limit,
+                }
+            return response
 
     @app.websocket('/ws')
     async def websocket(socket: WebSocket):

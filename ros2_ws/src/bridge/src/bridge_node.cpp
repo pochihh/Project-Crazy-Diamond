@@ -138,7 +138,11 @@ private:
     std::unique_ptr<Profiles> profiles_;
     Queue<Command,128> commands_;
     Inputs inputs_;
-    struct Result {uint64_t id;Error error;};
+    struct Result {
+        uint64_t id;Error error;
+        bool has_controller=false;unsigned axis=0;uint64_t revision=0;
+        ProfileId profile{};ControllerConfig controller{};double limit=0;
+    };
     Queue<Result,256> results_;
     std::atomic<uint64_t> lost_results_{0};
     Queue<Sample,4096> samples_;
@@ -286,6 +290,11 @@ private:
         while(results_.pop(result)) {
             interfaces::msg::CommandResult msg;msg.command_id=result.id;
             msg.applied=result.error==Error::none;msg.message=error_text(result.error);
+            msg.has_controller=result.has_controller;
+            if(result.has_controller) {
+                msg.axis=result.axis;msg.controller_revision=result.revision;
+                msg.controller=profile_message(result.profile,result.controller);msg.duty_limit=result.limit;
+            }
             result_publisher_->publish(msg);
             if(result.id==record_command_id_&&result.error!=Error::none)finish_recording();
             if(result.id==program_command_id_&&result.error!=Error::none)pending_program_.reset();
@@ -415,7 +424,16 @@ private:
                     if(command.input){++core_.state.input_rejections;core_.state.input_error=Error::busy;core_.state.input_operation=command.op;core_.state.input_channel=command.axis;}
                     else{core_.state.command_error=Error::busy;core_.state.command_id=command.id;}
                 } else core_.apply(command);
-                if(!command.input && !results_.push({command.id,core_.state.command_error}))++lost_results_;
+                if(!command.input) {
+                    Result result{command.id,core_.state.command_error};
+                    if(command.axis<kAxes && (command.op==Op::controller || command.op==Op::profile ||
+                       command.op==Op::kp || command.op==Op::ki || command.op==Op::kd || command.op==Op::limit)) {
+                        const auto a=command.axis;result.has_controller=true;result.axis=a;
+                        result.revision=core_.state.controller_revision[a];result.profile=core_.state.profiles[a];
+                        result.controller=core_.controllers[a].config;result.limit=core_.controllers[a].limit;
+                    }
+                    if(!results_.push(result))++lost_results_;
+                }
             }
             // Stop wins over queued enables, even when the command queue was full.
             if(stop_.exchange(false)){runner_.stop(core_);core_.apply({Op::stop,0,0,false,core_.state.command_id});}

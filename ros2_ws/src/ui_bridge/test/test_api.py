@@ -218,3 +218,51 @@ def test_preview_restart_and_robot_expiry():
     assert RosClient.snapshot(ros)['robot']=={'id':'test'}
     ros.robot_received-=3
     assert RosClient.snapshot(ros)['robot'] is None
+
+
+def test_controller_apply_verifies_rt_readback_not_request_or_latest_state(tmp_path):
+    from interfaces.msg import CommandResult, ControllerProfile
+    from interfaces.srv import Command
+
+    class OnlineRos(FakeRos):
+        def __init__(self):
+            self.state = {'last_command_id': 8, 'controllers': [{'type': 'later-setting'}]}
+            self.results = {}
+            self.actual = ControllerProfile(id='working', type='pid', parameter_names=['kd','kp','ki'],
+                                            parameter_values=[.0001,.001,0.], slew_rate_mm_s=100.)
+            self.has_readback = True
+            self.applied = True
+            self.client = SimpleNamespace(service_is_ready=lambda:True, call_async=self.call)
+        def snapshot(self): return dict(self.state, bridge_alive=True)
+        def call(self, request):
+            self.request = request
+            self.results[7] = CommandResult(command_id=7, applied=self.applied, message='Rejected by RT',
+                has_controller=self.has_readback, axis=1, controller_revision=42,
+                controller=self.actual, duty_limit=.5)
+            return SimpleNamespace(done=lambda:True, result=lambda:Command.Response(accepted=True, command_id=7))
+
+    ros = OnlineRos()
+    client = TestClient(create_app(ros, tmp_path, tmp_path/'missing-ui'))
+    request = dict(operation='controller_apply', axis=1, controller_type='pid',
+                   parameters=dict(kp=.001,ki=0.,kd=.0001), set_reference=True,
+                   slew_enabled=False, slew_rate_mm_s=100.)
+    response = client.post('/api/command', json=request)
+    assert response.status_code == 200
+    readback = response.json()['controller_readback']
+    assert readback['controller_revision'] == 42 and readback['axis'] == 1
+    assert readback['controller']['parameter_values'] == [.0001,.001,0.]
+    assert response.json()['state']['controllers'][0]['type'] == 'later-setting'
+    assert list(ros.request.parameter_names) == ['kp','ki','kd']
+    ros.actual.parameter_values = [.0002,.001,0.]
+    assert client.post('/api/command', json=request).status_code == 409
+    ros.actual.parameter_values = [.0001,.001,0.]
+    ros.actual.slew_enabled = True
+    assert client.post('/api/command', json=request).status_code == 409
+    ros.has_readback = False
+    assert client.post('/api/command', json=request).status_code == 502
+    ros.has_readback = True
+    assert client.post('/api/command', json=dict(operation='limit',axis=1,value=.5)).status_code == 200
+    assert client.post('/api/command', json=dict(operation='limit',axis=1,value=.4)).status_code == 409
+    ros.applied = False
+    response = client.post('/api/command', json=request)
+    assert response.status_code == 409 and response.json()['detail'] == 'Rejected by RT'

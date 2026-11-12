@@ -24,7 +24,14 @@ def command(op, axis=0, **fields):
     request = Request(args.url + '/api/command', data=json.dumps(dict(operation=op, axis=axis, **fields)).encode(),
                       headers={'Content-Type': 'application/json'})
     with urlopen(request, timeout=5) as response:
-        return json.load(response)['state']
+        result = json.load(response)
+    if op in ('controller_apply', 'profile_load', 'profile_save', 'profile_create', 'limit', 'kp', 'ki', 'kd'):
+        readback = result['controller_readback']
+        assert readback['axis'] == axis
+        assert readback['controller_revision'] == result['state']['controller_revision'][axis]
+        assert readback['controller'] == result['state']['controllers'][axis]
+        assert readback['duty_limit'] == result['state']['duty_limit'][axis]
+    return result['state']
 
 
 def parameters(profile):

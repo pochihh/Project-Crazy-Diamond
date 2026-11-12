@@ -1,14 +1,14 @@
 import { command, type ControllerCommand } from './command';
 export type Profile = {id: string; type: string; parameter_names: string[]; parameter_values: number[]; slew_enabled: boolean; slew_rate_mm_s: number};
 type ControllerType = {type: string; label: string; parameter_names: string[]; parameter_units: string[]; defaults: number[]; minimum: number[]; maximum: number[]};
-export type ControllerState = {controllers: Profile[]; controller_revision: number[]; control_rate_hz: number; system_enabled: boolean; axis_enabled: boolean[]; duty_limit: number[]; control_mode: number[]; fault: string};
+export type ControllerState = {ui_instance?: string; ui_sequence?: number; controllers: Profile[]; controller_revision: number[]; control_rate_hz: number; system_enabled: boolean; axis_enabled: boolean[]; duty_limit: number[]; control_mode: number[]; fault: string};
 type Catalog = {types: ControllerType[]; profiles: Profile[]; errors: string[]};
 
 export function controllerPanel() {
     const panel = document.createElement('aside');
     panel.className = 'settings-panel panel'; panel.id = 'controller-panel'; panel.hidden = true;
     panel.setAttribute('aria-label', 'Axis controller settings');
-    panel.innerHTML = `<div class="panel-head"><span id="controller-title">AXIS CONTROLLER</span><button id="controller-close" class="icon-close" aria-label="Close controller settings">×</button></div><div class="settings-body"><label>Controller<select id="controller-type"></select></label><p>Change type while disabled. Parameters can be tuned while running. LQR awaits its state model.</p><label>Saved profile<select id="controller-profile"></select></label><div class="controller-actions"><button id="profile-load">LOAD / RELOAD</button><button id="profiles-refresh" class="secondary">REFRESH</button></div><p id="controller-profile-status"></p><div id="controller-parameters" class="controller-parameters"></div><label>Reference processing<select id="reference-type"><option value="passthrough">Passthrough / no shaping</option><option value="slew_limit">Slew limit</option></select></label><label>Maximum reference rate / mm/s<input id="reference-rate" type="number" min="0.000001" step="any" value="20"></label><button id="controller-apply">APPLY PARAMETERS</button><div class="controller-actions"><button id="profile-save">SAVE PROFILE</button></div><label>New profile ID<input id="profile-new" placeholder="bench_pid_v2" maxlength="63" pattern="[a-z0-9_-]+"></label><button id="profile-create">SAVE AS NEW PROFILE</button><hr><label>Axis duty limit / 0–1<input id="controller-limit" type="number" min="0.000001" max="1" step="any"></label><button id="controller-limit-apply">SET DUTY LIMIT</button><p>Duty limit requires this axis disabled and stays in the axis configuration, outside the shared profile.</p><p id="controller-reference"></p><p id="controller-feedback" role="status"></p></div>`;
+    panel.innerHTML = `<div class="panel-head"><span id="controller-title">AXIS CONTROLLER</span><button id="controller-close" class="icon-close" aria-label="Close controller settings">×</button></div><div class="settings-body"><label>Controller<select id="controller-type"></select></label><p>Change type while disabled. Parameters can be tuned while running. LQR awaits its state model.</p><label>Saved profile<select id="controller-profile"></select></label><div class="controller-actions"><button id="profile-load">LOAD / RELOAD</button><button id="profiles-refresh" class="secondary">REFRESH</button></div><p id="controller-profile-status"></p><div id="controller-parameters" class="controller-parameters"></div><p id="controller-readback" role="status"></p><label>Reference processing<select id="reference-type"><option value="passthrough">Passthrough / no shaping</option><option value="slew_limit">Slew limit</option></select></label><label>Maximum reference rate / mm/s<input id="reference-rate" type="number" min="0.000001" step="any" value="20"></label><button id="controller-apply">APPLY PARAMETERS</button><div class="controller-actions"><button id="profile-save">SAVE PROFILE</button></div><label>New profile ID<input id="profile-new" placeholder="bench_pid_v2" maxlength="63" pattern="[a-z0-9_-]+"></label><button id="profile-create">SAVE AS NEW PROFILE</button><hr><label>Axis duty limit / 0–1<input id="controller-limit" type="number" min="0.000001" max="1" step="any"></label><button id="controller-limit-apply">SET DUTY LIMIT</button><p>Duty limit requires this axis disabled and stays in the axis configuration, outside the shared profile.</p><p id="controller-reference"></p><p id="controller-feedback" role="status"></p></div>`;
     document.querySelector('.shell')!.append(panel);
     const el = <T extends HTMLElement = HTMLElement>(id: string) => panel.querySelector<T>(`#${id}`)!;
     const type = el<HTMLSelectElement>('controller-type'), profile = el<HTMLSelectElement>('controller-profile');
@@ -31,6 +31,10 @@ export function controllerPanel() {
             label.append(input); el('controller-parameters').append(label);
         });
     }
+    function update(s: ControllerState) {
+        if(s.ui_instance === current?.ui_instance && (s.ui_sequence ?? 0) < (current?.ui_sequence ?? 0)) return;
+        current = s;
+    }
     function paint() {
         if(panel.hidden || !current?.controllers?.[axis]) return;
         const active = current.controllers[axis], enabled = current.system_enabled && current.axis_enabled[axis] && !current.fault;
@@ -40,6 +44,9 @@ export function controllerPanel() {
             el<HTMLSelectElement>("reference-type").value=active.slew_enabled?"slew_limit":"passthrough";
             el<HTMLInputElement>("reference-rate").value=String(active.slew_rate_mm_s);
         }
+        el('controller-readback').textContent = `Active read-back · revision ${current.controller_revision[axis]}: ` +
+            active.parameter_names.map((name,i) => `${name.toUpperCase()} = ${active.parameter_values[i]}`).join(' · ') +
+            (live ? '' : ' · STALE / disconnected');
         const saved = catalog.profiles.find(p => p.id === active.id);
         const differs = !saved || saved.type !== active.type || saved.slew_enabled!==active.slew_enabled || saved.slew_rate_mm_s!==active.slew_rate_mm_s || saved.parameter_names.some((name,i) => active.parameter_values[active.parameter_names.indexOf(name)] !== saved.parameter_values[i]);
         el('controller-profile-status').textContent = dirty ? `Editing ${active.id || 'working copy'} — apply before saving.` :
@@ -75,10 +82,10 @@ export function controllerPanel() {
         busy = true; paint(); feedback('Applying…');
         try {
             const result = await command(operation,axis,value,false,extra);
-            current = result.state;
+            update(result.state);
             if(operation !== 'limit') { dirty = false; revision = -1; }
             if(operation.startsWith('profile_')) await refresh();
-            feedback(operation === 'profile_save' || operation === 'profile_create' ? 'Profile saved. Other axes keep their active parameters until reloaded.' : 'Applied.');
+            feedback(operation === 'profile_save' || operation === 'profile_create' ? 'Profile saved. Other axes keep their active parameters until reloaded.' : `Applied and read back · command ${result.command_id}, revision ${result.controller_readback.controller_revision}.`);
         } catch(error) { feedback(String(error)); }
         finally { busy = false; paint(); }
     }
@@ -119,5 +126,5 @@ export function controllerPanel() {
         const web = document.getElementById('settings-button')!; web.setAttribute('aria-expanded','false'); web.classList.remove('active');
         panel.hidden = false; paint(); void refresh().catch(e => feedback(String(e)));
     };
-    return {render(s: ControllerState, connected: boolean){current=s;live=connected;paint();},close(){panel.hidden=true;}};
+    return {render(s: ControllerState, connected: boolean){update(s);live=connected;paint();},close(){panel.hidden=true;}};
 }
