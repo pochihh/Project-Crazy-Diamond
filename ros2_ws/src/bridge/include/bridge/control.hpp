@@ -92,7 +92,7 @@ struct Sample {
 class Control {
 public:
     Sample state{};
-    std::array<AxisController,6> pid{};
+    std::array<AxisController,6> controllers{};
     double tracking_limit_mm=15;
     bool initialized=false, dsp_clear_requested=false;
     uint16_t mask() const {
@@ -122,15 +122,15 @@ public:
         for(unsigned a=0;a<kAxes;a++) {
             state.position[a]=state.position_configured[a] ?
                 (static_cast<double>(t.position[a])-state.zero[a])/state.scale[a] : 0;
-            state.tuning[a]=pid[a].tuning();
-            state.controllers[a]=pid[a].config;
+            state.tuning[a]=controllers[a].tuning();
+            state.controllers[a]=controllers[a].config;
         }
         state.number++;
     }
     void fail(Error error) {
         state.fault=error; state.system=false; state.selected={};
         state.pwm={};state.digital_out=0;state.analog_out={0,0};
-        for(auto& p:pid) p.reset();
+        for(auto& p:controllers) p.reset();
     }
     void apply(const Command& c) {
         const auto previous_error=state.command_error;
@@ -188,7 +188,7 @@ private:
             state.target[a]=c.value; break;
         case Op::pwm:
             if(state.mode[a]!=1) {state.command_error=Error::wrong_mode; return;}
-            if(!std::isfinite(c.value) || std::abs(c.value)>pid[a].limit) {state.command_error=Error::range; return;}
+            if(!std::isfinite(c.value) || std::abs(c.value)>controllers[a].limit) {state.command_error=Error::range; return;}
             state.pwm[a]=c.value; break;
         case Op::mode:
             if(enabled(a)) {state.command_error=Error::disabled_required; return;}
@@ -196,7 +196,7 @@ private:
             if(c.value==0 && !state.position_configured[a]) {state.command_error=Error::position_unconfigured;return;}
             state.mode[a]=static_cast<uint8_t>(c.value);state.pwm[a]=0;
             state.target[a]=std::clamp(state.position[a],state.minimum[a],state.maximum[a]);
-            state.reference[a]=state.position[a];pid[a].reset();break;
+            state.reference[a]=state.position[a];controllers[a].reset();break;
         case Op::zero:
             if(!state.position_configured[a]) {state.command_error=Error::position_unconfigured;return;}
             if(enabled(a)) {state.command_error=Error::disabled_required; return;}
@@ -204,13 +204,13 @@ private:
             state.zero[a]=state.telemetry.position[a];
             state.position[a]=state.target[a]=state.reference[a]=0;
             state.pwm[a]=0;
-            pid[a].reset(); break;
+            controllers[a].reset(); break;
         case Op::record: state.record_id=static_cast<uint64_t>(c.value); break;
         case Op::controller:
             if(!state.position_configured[a]) {state.command_error=Error::position_unconfigured;return;}
-            if(enabled(a)&&(c.controller.type!=pid[a].config.type || c.controller.slew_enabled!=pid[a].config.slew_enabled)) {state.command_error=Error::disabled_required;return;}
+            if(enabled(a)&&(c.controller.type!=controllers[a].config.type || c.controller.slew_enabled!=controllers[a].config.slew_enabled)) {state.command_error=Error::disabled_required;return;}
             if(!valid_controller(c.controller)) {state.command_error=Error::range;return;}
-            pid[a].configure(c.controller,enabled(a));
+            controllers[a].configure(c.controller,enabled(a));
             if(c.profile[0])state.profiles[a]=c.profile;
             state.controller_revision[a]++;break;
         case Op::profile:
@@ -220,17 +220,17 @@ private:
             if(!std::isfinite(c.value) || c.value<0 || (c.op==Op::limit && (c.value<=0 || c.value>1))) {
                 state.command_error=Error::range; return;
             }
-            if(c.op==Op::limit) {pid[a].limit=c.value;pid[a].reset();break;}
-            if(pid[a].config.type!=0) {state.command_error=Error::wrong_mode;return;}
-            auto candidate=pid[a].config;
+            if(c.op==Op::limit) {controllers[a].limit=c.value;controllers[a].reset();break;}
+            if(controllers[a].config.type!=0) {state.command_error=Error::wrong_mode;return;}
+            auto candidate=controllers[a].config;
             candidate.parameters[c.op==Op::kp?0:c.op==Op::ki?1:2]=c.value;
             if(!valid_controller(candidate)) {state.command_error=Error::range;return;}
-            pid[a].configure(candidate,enabled(a));state.controller_revision[a]++;break;
+            controllers[a].configure(candidate,enabled(a));state.controller_revision[a]++;break;
         }
         const auto after=mask();
         for(unsigned i=0;i<kAxes;i++) {
             if((before^after)&(1U<<i)) {
-                pid[i].reset(); state.reference[i]=state.position[i];
+                controllers[i].reset(); state.reference[i]=state.position[i];
                 state.target[i]=std::clamp(state.position[i],state.minimum[i],state.maximum[i]);
                 state.pwm[i]=0;
             }
@@ -240,18 +240,18 @@ public:
     Values duty() {
         Values result{};
         for(unsigned a=0;a<kAxes;a++) {
-            if(!enabled(a)) {pid[a].reset(); continue;}
+            if(!enabled(a)) {controllers[a].reset(); continue;}
             if(state.mode[a]==1) {
                 if(state.position_configured[a] && (state.position[a]<state.minimum[a] || state.position[a]>state.maximum[a])) {fail(Error::travel);return {};}
-                result[a]=static_cast<float>(std::clamp(state.pwm[a],-pid[a].limit,pid[a].limit));
+                result[a]=static_cast<float>(std::clamp(state.pwm[a],-controllers[a].limit,controllers[a].limit));
                 continue;
             }
-            const double output=pid[a].step(state.target[a],state.position[a],state.scale[a],dt);
-            state.reference[a]=pid[a].reference_mm;
+            const double output=controllers[a].step(state.target[a],state.position[a],state.scale[a],dt);
+            state.reference[a]=controllers[a].reference_mm;
             const double error=(state.reference[a]-state.position[a])*state.scale[a];
             if(std::abs(error)>tracking_limit_mm*state.scale[a]) {fail(Error::tracking); return {};}
             if(!std::isfinite(output)) {fail(Error::numeric);return {};}
-            result[a]=static_cast<float>(std::clamp(output,-pid[a].limit,pid[a].limit));
+            result[a]=static_cast<float>(std::clamp(output,-controllers[a].limit,controllers[a].limit));
             if(!std::isfinite(result[a])) {fail(Error::numeric); return {};}
         }
         return result;

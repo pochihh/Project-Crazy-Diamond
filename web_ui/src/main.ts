@@ -250,7 +250,6 @@ function render(s: State) {
 
     }
     controllers.render(s,live);
-    data.render(s,live);
     text('axis-note', s.control_mode?.slice(0,2).includes(1) ? 'PWM holds the last duty until set to zero or disabled.' : 'Targets hold on release and through browser disconnect.');
     text('dsp-rate', `${(s.control_rate_hz ?? 0).toLocaleString()} Hz`);
     text('dsp-link', live ? 'SPI / 10 MHz' : 'OFFLINE');
@@ -281,6 +280,7 @@ function render(s: State) {
     if (wasRecording && !s.recording)
         void loadRecordings();
     wasRecording = s.recording;
+    data.render(s,live);
     if (activeTab === 'resources' && performance.now() - lastResourceUpdate >= 200) {
         lastResourceUpdate = performance.now();
         renderResources(s, live);

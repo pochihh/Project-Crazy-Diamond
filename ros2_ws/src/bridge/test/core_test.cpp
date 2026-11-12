@@ -28,7 +28,7 @@ int main() {
     assert(log.str().find("\"ioctl_result\":192")!=std::string::npos);
     assert(log.str().find("\"missed_periods\":4,\"period_us\":500")!=std::string::npos);
     assert(log.str().find(",1234]}\n")!=std::string::npos);
-    Control c;c.pid[0].config.slew_enabled=true;Telemetry sample{};sample.position[0]=12345;sample.position[1]=-500;sample.timestamp_us=0xfffffff0;
+    Control c;c.controllers[0].config.slew_enabled=true;Telemetry sample{};sample.position[0]=12345;sample.position[1]=-500;sample.timestamp_us=0xfffffff0;
     c.receive(sample);
     assert(c.state.position[0]==0&&c.state.zero[0]==12345);
     assert(std::abs(counts_per_mm-321.846662696944)<1e-9);
@@ -86,11 +86,11 @@ int main() {
     online.state.profiles[0]=profile_id("shared");
     Command tune;tune.op=Op::controller;tune.controller.parameters={0.0006,0.002,0.00001};
     online.apply(tune);assert(online.mask()==1&&online.state.command_error==Error::none);
-    assert(online.pid[0].config.parameters==tune.controller.parameters&&online.pid[1].config.parameters[0]==0.0005);
+    assert(online.controllers[0].config.parameters==tune.controller.parameters&&online.controllers[1].config.parameters[0]==0.0005);
     assert(std::string(online.state.profiles[0].data())=="shared");
     tune.controller.type=1;online.apply(tune);assert(online.state.command_error==Error::disabled_required);
     tune.controller.type=0;tune.controller.parameters[1]=NAN;online.apply(tune);
-    assert(online.state.command_error==Error::range&&online.pid[0].config.parameters[1]==0.002);
+    assert(online.state.command_error==Error::range&&online.controllers[0].config.parameters[1]==0.002);
     online.apply({Op::kp,0,0.0007});assert(online.state.command_error==Error::none&&online.mask()==1);
     online.apply({Op::limit,0,0.2});assert(online.state.command_error==Error::disabled_required);
     Queue<unsigned,64> queue;

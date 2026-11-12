@@ -15,7 +15,7 @@ class FakeRos:
 
 
 def test_snapshots_order_http_and_websocket_without_changing_control_frames():
-    ros = SimpleNamespace(sequence=0, instance='ui-process', state={}, received=0)
+    ros = SimpleNamespace(sequence=0, instance='ui-process', state={}, received=0, robot={}, robot_received=0)
     message = BridgeState()
     message.sample_count = 100
     RosClient.update(ros, message)

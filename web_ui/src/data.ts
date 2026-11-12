@@ -43,6 +43,7 @@ export function dataTools(){
             el('runner-progress').textContent=`${s.program_name||'No program loaded'} · ${s.program_rows||0} rows · row ${s.program_rows?s.runner_row+1:0} · ${s.runner_cycles||0} completed cycles`;
             el('runner-active-options').textContent=owned?`Active completion: ${s.runner_completion} · recording ${s.recording?'ON':'OFF'}`:'';
             el('runner-error').textContent=s.runner_error||'';
+            if(owned)for(let a=0;a<2;a++)if(s.runner_axis_mask&(1<<a))for(const id of ['slider','target','apply','mode','zero'])(el(`${id}-${a}`) as HTMLInputElement).disabled=true;
             const robot=s.robot;const slot=el('robot-slot');slot.hidden=!robot||robot.version!==1;
             if(robot&&robot.version===1){try{const url=new URL(robot.panel_url);if(!['http:','https:'].includes(url.protocol))throw Error();if(lastRobot!==url.href){el<HTMLIFrameElement>('robot-frame').src=url.href;el<HTMLIFrameElement>('robot-frame').title=robot.name;lastRobot=url.href;}}catch{slot.hidden=true;}}else if(lastRobot){el<HTMLIFrameElement>('robot-frame').src='about:blank';lastRobot='';}
         }

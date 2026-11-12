@@ -44,7 +44,7 @@ public:
         profiles_=std::make_unique<Profiles>(declare_parameter("controller_directory",std::string("projects/")+DIAMOND_PROJECT_ID+"/controllers"));
         for(unsigned a=0;a<kAxes;a++) {
             const auto key="axis"+std::to_string(a)+".";
-            auto& controller=core_.pid[a];
+            auto& controller=core_.controllers[a];
             const bool position=declare_parameter(key+"position_control",a<2);
             core_.state.position_configured[a]=position;
             core_.state.mode[a]=position?0:1;
@@ -332,7 +332,7 @@ private:
         const auto& s=latest_;
         interfaces::msg::BridgeState msg;
         msg.project_id=DIAMOND_PROJECT_ID;
-        
+
         msg.controller_revision=s.controller_revision;
         msg.control_mode=s.mode;msg.pwm_target=s.pwm;msg.counts_per_mm=s.scale;
         msg.minimum_mm=s.minimum;msg.maximum_mm=s.maximum;
@@ -444,7 +444,7 @@ private:
                     for(unsigned a=0;a<kAxes;a++) {
                         // shortcut: deterministic first-order plant, use hardware for controller validation.
                         if(mask&(1U<<a)) {
-                            if(core_.state.mode[a]==1) mock_position[a]+=values[a]*core_.pid[a].sign*50*dt*(core_.state.position_configured[a]?core_.state.scale[a]:1000);
+                            if(core_.state.mode[a]==1) mock_position[a]+=values[a]*core_.controllers[a].sign*50*dt*(core_.state.position_configured[a]?core_.state.scale[a]:1000);
                             else mock_position[a]+=(core_.state.zero[a]+core_.state.reference[a]*core_.state.scale[a]-mock_position[a])*0.08;
                         }
                         simulated.position[a]=static_cast<int32_t>(std::llround(mock_position[a]));
@@ -506,7 +506,7 @@ private:
             if(end>deadline) {
                 core_.state.deadlines+=missed;
                 // Mock uses ordinary scheduling; only hardware enforces the RT deadline.
-                if(mask!=0 && !mock_) core_.fail(Error::deadline);
+                if((mask!=0||runner_.owns(core_.state)) && !mock_) core_.fail(Error::deadline);
                 // Do not issue back-to-back SPI frames after an overrun: allow DSP rearm.
                 scheduled=end+control_period;
             } else scheduled=deadline;

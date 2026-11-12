@@ -40,7 +40,8 @@ inline std::vector<Signal> signal_catalog() {
         out.push_back({prefix+"controller_profile","text",group,{},[a](const Sample& s){return std::string(s.profiles[a].data());}});
         out.push_back({prefix+"controller_parameters","text",group,{},[a](const Sample& s){
             std::ostringstream v;v<<std::setprecision(17);const auto& c=s.controllers[a];const auto& type=controller_types[c.type];
-            for(unsigned i=0;i<type.count;i++)v<<(i?";":"")<<type.parameters[i].name<<'='<<c.parameters[i];return v.str();}});
+            for(unsigned i=0;i<type.count;i++)v<<(i?";":"")<<type.parameters[i].name<<'='<<c.parameters[i];
+            return v.str();}});
         add("encoder"+std::to_string(a)+"_counts","count","DSP",[a](const Sample& s){return s.telemetry.position[a];});
         add("dsp_reference"+std::to_string(a)+"_counts","count","DSP",[a](const Sample& s){return s.telemetry.reference[a];});
         add("ai"+std::to_string(a)+"_raw","code","Analog I/O",[a](const Sample& s){return s.telemetry.analog_in[a];});
