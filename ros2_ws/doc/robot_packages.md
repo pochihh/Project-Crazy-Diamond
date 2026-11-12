@@ -72,3 +72,12 @@ The axes' selected controller profiles remain in force. Choose `research_pid`
 (passthrough) when studying the unshaped sine/CSV reference. The robot does not
 silently change PID gains or bypass output/fault limits. Waveform settings are
 applied when starting a new run; changing an active waveform requires Stop/Start.
+
+The panel displays each axis's active limiter and the sine's peak speed,
+`2π × amplitude / period`. A ±20 mm, 1 s sine requires approximately 125.7 mm/s;
+a 100 mm/s slew limit still reshapes it. Select **Passthrough / no shaping** in
+each disabled axis's Controller Settings when the reference must stay unshaped.
+This does not guarantee physical tracking: PID dynamics, duty limits and the
+mechanism still determine measured motion. Tiny floating-point residues below
+1e-12 display as zero in the panel and logger preview; command/CSV values retain
+their original precision.
