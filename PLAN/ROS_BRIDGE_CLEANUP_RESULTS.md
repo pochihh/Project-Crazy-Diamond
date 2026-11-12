@@ -92,11 +92,57 @@ Evidence is on the Pi under
 and the corresponding mock reports.
 Recordings remain in the canonical checkout's ignored `recordings/` directory.
 
+## Physical DSP power-cycle follow-up
+
+The operator subsequently performed several intentional DSP power cycles while
+both Pi services stayed running. The bridge observed **three DSP restarts**,
+each with a new time origin and a fresh host session. It reconnected without
+restarting either service; their process IDs remained unchanged. Outputs stayed
+disabled and the host communication fault remained latched until explicitly
+cleared. Startup zeros were captured again after synchronization.
+
+An active CSV recording ended on the first restart with the explicit message
+`Recording ended because the DSP restarted; a new startup zero was established`.
+Its **388,326 samples** have consecutive sample numbers and strictly increasing
+timestamps; no post-reset time origin was mixed into that file. Recording did
+not resume automatically. The original monitor assumed exactly one restart, so
+that assertion failed; the operator confirmed multiple power cycles, matching
+the three observed boot sequences.
+
+After the final reconnection, a 30-second disarmed observation passed with no
+additional host errors, DSP frame errors, restarts or missed deadlines. Clearing
+the host fault left outputs disabled. The subsequent physical position and
+±3% duty regression passed and recorded **8,915 consecutive samples**, then left
+system enable off, motor/DO/DAC outputs zero and recording stopped.
+
+| Counter | Before power cycles | After cycles and control regression |
+|---|---:|---:|
+| Host-observed DSP restarts | 0 | 3 |
+| Host telemetry errors | 0 | 5,308 |
+| Missed control deadlines | 0 | 0 |
+| Dropped sample-queue entries | 0 | 0 |
+| DSP invalid frames | 0 | 1 |
+| DSP rejected commands | 473,293 | 0 |
+| DSP command timeouts | 0 | 0 |
+| DSP encoder errors | 0 | 0 |
+
+The host telemetry errors were accumulated while DSP feedback was unavailable;
+the count remained 5,308 through the stability and control checks. The DSP's one
+invalid-frame count also remained unchanged after recovery. Its old rejected
+command count reset with DSP power cycling, while host counters persisted in
+the still-running bridge. Maximum worker execution for that service lifetime
+was 348.317 µs, already present before this test, below the 500 µs period.
+
+Evidence is in the same Pi directory: `power-cycle-baseline.json`,
+`power-cycle-states.jsonl`, `power-cycle-result.json`,
+`power-cycle-stability.json`, `power-cycle-cleared.json` and
+`power-cycle-control.json`. The DSP firmware was unchanged throughout.
+
 ## Coverage limits
 
 This is bounded regression evidence, not a long-duration reliability claim.
-The new DSP-reset recovery path was tested with host state-machine tests; a new
-physical DSP power-cycle test was not performed during this cleanup. Firmware
-standalone FLASH boot was previously verified in [stage 3](STAGE3_RESULTS.md).
-No motion tests were added for physical motor channels 2–5. Reset-cause capture
-and hardware-watchdog recovery remain deferred.
+DSP restart recovery now has both host state-machine tests and physical
+power-cycle coverage with outputs disabled. Power loss during active motor
+drive was not tested. Firmware standalone FLASH boot was previously verified
+in [stage 3](STAGE3_RESULTS.md). No motion tests were added for physical motor
+channels 2–5. Reset-cause capture and hardware-watchdog recovery remain deferred.
