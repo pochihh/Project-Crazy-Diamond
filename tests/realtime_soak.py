@@ -18,6 +18,7 @@ def main():
     parser.add_argument('--physical', action='store_true', required=True)
     parser.add_argument('--seconds', type=float, default=1800)
     parser.add_argument('--load', action='store_true')
+    parser.add_argument('--runner', action='store_true', help='Replay a Phantom sine and exercise live data previews')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     assert args.seconds > 0
@@ -33,6 +34,13 @@ def main():
                           headers={'Content-Type': 'application/json'})
         with urlopen(request, timeout=10) as response:
             return json.load(response)['state']
+
+    def phantom(operation, **fields):
+        request = Request('http://127.0.0.1:8001/command',
+                          data=json.dumps(dict(operation=operation, **fields)).encode(),
+                          headers={'Content-Type': 'application/json'})
+        with urlopen(request, timeout=30) as response:
+            return json.load(response)
 
     initial = get()
     assert initial['bridge_alive'] and initial['connected'] and not initial['mock']
@@ -58,7 +66,8 @@ def main():
             try:
                 reader, writer = await asyncio.open_connection('127.0.0.1', 8000)
                 socket = WSConnection(ConnectionType.CLIENT)
-                writer.write(socket.send(Handshake(host='127.0.0.1:8000', target='/ws')))
+                target = '/ws/data' if args.runner and index >= 4 else '/ws'
+                writer.write(socket.send(Handshake(host='127.0.0.1:8000', target=target)))
                 while not stream_stop.is_set():
                     data = await asyncio.wait_for(reader.read(65536), 5)
                     if not data: raise RuntimeError('UI stream closed')
@@ -88,8 +97,15 @@ def main():
             command('zero', a)
             command('limit', a, value=min(.25, initial['duty_limit'][a]))
             command('axis', a, enabled=True)
-        command('system', enabled=True)
-        command('record_start'); recording = True
+        if args.runner:
+            with urlopen(url+'/api/data/signals', timeout=10) as response:
+                signals = [item['name'] for item in json.load(response)['signals']]
+            phantom('start', source='sine', period_s=.25, amplitude_mm=[.3,.3],
+                    offset_mm=[0,0], phase_deg=90, pulse_width_ms=5, completion='loop', signals=signals)
+        else:
+            command('system', enabled=True)
+            command('record_start')
+        recording = True
         if args.load:
             import wsproto  # The UI server already uses this installed package.
             for cpu in range(3):
@@ -103,8 +119,12 @@ def main():
             while time.monotonic()-started < args.seconds:
                 phase = (time.monotonic()-started)*2*math.pi/8
                 target = 5*math.sin(phase)
-                command('target', 0, value=target)
-                state = command('target', 1, value=-target)
+                if args.runner:
+                    state = get()
+                    assert state['runner_state'] == 1 and state['recording']
+                else:
+                    command('target', 0, value=target)
+                    state = command('target', 1, value=-target)
                 log.write(json.dumps(state)+'\n'); log.flush()
                 assert state['bridge_alive'] and state['connected'] and not state['fault'], state['fault']
                 assert state['system_enabled'] and all(state['axis_enabled'][:2])
@@ -117,6 +137,7 @@ def main():
                         counters={k:counter(state,k)-counter(initial,k) for k in counters})), flush=True)
                     report_at = time.monotonic()+30
                 time.sleep(.1)
+        if args.runner: phantom('stop')
         command('stop')
         state = command('record_stop'); recording = False
         for _ in range(100):
@@ -131,17 +152,23 @@ def main():
         assert not stream_errors, stream_errors
         if args.load: assert min(stream_counts) > 0, stream_counts
         path = Path(__file__).resolve().parents[1]/'recordings'/state['recording_file']
-        rows = 0; previous = None
+        rows = 0; previous = None; previous_tick = None
         with path.open() as source:
             reader = csv.DictReader(line for line in source if not line.startswith('#'))
             for row in reader:
                 assert None not in row and None not in row.values(), 'CSV shape'
                 current = (int(row['sample']), int(row['timestamp_us']))
+                if args.runner:
+                    tick = int(row['runner_row'])
+                    assert int(row['do0_command']) == int(tick < 10)
+                    if previous_tick is not None: assert tick == (previous_tick+1) % 500
+                    else: assert tick == 0
+                    previous_tick = tick
                 if previous:
                     assert current[0] == previous[0]+1 and current[1] > previous[1], (previous, current)
                 previous = current; rows += 1
         assert rows == state['recorded_samples'] and rows > args.seconds*1900, rows
-        result = dict(result='PASS', duration_s=args.seconds, load=args.load, samples=rows,
+        result = dict(result='PASS', duration_s=args.seconds, load=args.load, runner=args.runner, samples=rows,
                       recording=state['recording_file'], stream_messages=stream_counts,
                       max_cycle_us=state['max_cycle_us'], max_lateness_us=state['max_lateness_us'],
                       counters={k:counter(state,k)-counter(initial,k) for k in counters})
