@@ -39,7 +39,10 @@ def main():
     assert not initial['recording'] and not initial['fault'], initial['fault']
     (args.output/'initial.json').write_text(json.dumps(initial, indent=2))
     counters = ('telemetry_errors', 'deadline_misses', 'dropped_samples',
-                'dsp_invalid_frames', 'dsp_rejected_commands', 'dsp_watchdogs')
+                'dsp.invalid_frames', 'dsp.rejected_commands', 'dsp.command_timeout_count')
+    def counter(s, key):
+        return s['dsp'][key[4:]] if key.startswith('dsp.') else s[key]
+
     workers = []
     stream_stop = threading.Event()
     stream_counts = [0]*8
@@ -104,14 +107,14 @@ def main():
                 state = command('target', 1, value=-target)
                 log.write(json.dumps(state)+'\n'); log.flush()
                 assert state['bridge_alive'] and state['connected'] and not state['fault'], state['fault']
-                assert state['system_enabled'] and all(state['axis_enabled'])
+                assert state['system_enabled'] and all(state['axis_enabled'][:2])
                 for key in counters:
-                    assert state[key] == initial[key], f'{key}: {initial[key]} -> {state[key]}'
+                    assert counter(state,key) == counter(initial,key), f'{key}: {counter(initial,key)} -> {counter(state,key)}'
                 assert not stream_errors, stream_errors
                 if time.monotonic() >= report_at:
                     print(json.dumps(dict(elapsed_s=round(time.monotonic()-started, 1), sample=state['sample_count'],
                         max_cycle_us=state['max_cycle_us'], max_lateness_us=state['max_lateness_us'],
-                        counters={k:state[k]-initial[k] for k in counters})), flush=True)
+                        counters={k:counter(state,k)-counter(initial,k) for k in counters})), flush=True)
                     report_at = time.monotonic()+30
                 time.sleep(.1)
         command('stop')
@@ -141,7 +144,7 @@ def main():
         result = dict(result='PASS', duration_s=args.seconds, load=args.load, samples=rows,
                       recording=state['recording_file'], stream_messages=stream_counts,
                       max_cycle_us=state['max_cycle_us'], max_lateness_us=state['max_lateness_us'],
-                      counters={k:state[k]-initial[k] for k in counters})
+                      counters={k:counter(state,k)-counter(initial,k) for k in counters})
         (args.output/'result.json').write_text(json.dumps(result, indent=2))
         print(json.dumps(result, indent=2), flush=True)
     finally:

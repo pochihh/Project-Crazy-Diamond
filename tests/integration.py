@@ -46,7 +46,7 @@ def main():
     assert initial.get('bridge_alive') and initial.get('connected'), 'Bridge must be connected before testing'
     assert initial['mock'] != args.physical, 'Use --physical only for an actual motor test'
     assert not initial.get('recording'), 'Finish the current recording before testing'
-    original_limits = initial['duty_limit']
+    original_limits = initial['duty_limit'][:2]
     recording = False
     try:
         command('stop')
@@ -65,11 +65,9 @@ def main():
             raise AssertionError('Reset incorrectly accepted while motor enabled')
         except HTTPError as e:
             assert e.code == 409
-        try:
-            command('target', 0, 51)
-            raise AssertionError('Out-of-range target accepted')
-        except HTTPError as e:
-            assert e.code == 409
+        rejections = get('/api/state')['input_rejections']
+        assert command('target', 0, 51)['published']
+        wait(lambda s: s['input_rejections'] > rejections and s['target_mm'][0] == 2)
         command('record_start'); recording = True
         recording_started = time.monotonic()
         endpoints = []
@@ -87,7 +85,7 @@ def main():
         # No browser connection or command refresh is needed to hold position.
         time.sleep(3)
         held = wait(lambda s: abs(s['position_mm'][0]-1)<0.3 and abs(s['position_mm'][1]+1)<0.3)
-        assert held['system_enabled'] and all(held['axis_enabled']) and held['recording']
+        assert held['system_enabled'] and all(held['axis_enabled'][:2]) and held['recording']
         command('axis', 0, enabled=False)
         wait(lambda s: abs(s['output_duty'][0])<0.001 and s['axis_enabled'][1])
         command('zero', 0)

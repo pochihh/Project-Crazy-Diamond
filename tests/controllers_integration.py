@@ -42,7 +42,7 @@ def rejected(op, axis=0, **fields):
 initial = get('/api/state')
 assert initial['connected'] and initial['bridge_alive'] and not initial['recording']
 assert initial['mock'] != args.physical
-original = initial['controllers']
+original = initial['controllers'][:2]
 name = 'test_live_' + str(time.time_ns())
 recording = False
 try:
@@ -61,7 +61,7 @@ try:
     command('target', 0, value=.5); command('target', 1, value=-.5)
     time.sleep(.4)
     state = command('controller_apply', controller_type='pid', parameters=changed)
-    assert state['system_enabled'] and all(state['axis_enabled'])
+    assert state['system_enabled'] and all(state['axis_enabled'][:2])
     assert parameters(state['controllers'][0]) == changed and parameters(state['controllers'][1]) == baseline
     assert state['controllers'][0]['id'] == name
     state = command('profile_save', profile=name, controller_revision=state['controller_revision'][0])
@@ -69,7 +69,7 @@ try:
     saved = next(p for p in get('/api/controllers')['profiles'] if p['id'] == name)
     assert parameters(saved) == changed
     state = command('profile_load', 1, profile=name)
-    assert state['system_enabled'] and all(state['axis_enabled']) and parameters(state['controllers'][1]) == changed
+    assert state['system_enabled'] and all(state['axis_enabled'][:2]) and parameters(state['controllers'][1]) == changed
     rejected('controller_apply', controller_type='pid', parameters={'kp': .001})
     rejected('controller_apply', controller_type='lqr', parameters=changed)
     rejected('profile_load', profile='../bench_pid')
@@ -78,7 +78,7 @@ try:
     rejected('limit', value=.5)
     time.sleep(2)
     state = get('/api/state')
-    assert state['system_enabled'] and all(state['axis_enabled']) and not state['fault']
+    assert state['system_enabled'] and all(state['axis_enabled'][:2]) and not state['fault']
     assert abs(state['position_mm'][0]-.5)<.3 and abs(state['position_mm'][1]+.5)<.3
     for key in ('telemetry_errors','dropped_samples') + (('deadline_misses',) if args.physical else ()):
         assert state[key] == initial[key], (key, state[key], initial[key])

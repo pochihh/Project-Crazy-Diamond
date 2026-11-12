@@ -30,7 +30,7 @@ public:
     }
 };
 
-enum class Op { target, pwm, mode, axis, system, stop, zero, clear, kp, ki, kd, limit, digital, analog, record, controller, profile };
+enum class Op { target, pwm, mode, axis, system, stop, zero, clear, clear_dsp, kp, ki, kd, limit, digital, analog, record, controller, profile };
 enum class Error { none, disabled_required, range, zero_required, wrong_mode, travel, not_ready, tracking, numeric, deadline, telemetry, dsp, realtime };
 inline const char* error_text(Error e) {
     switch(e) {
@@ -53,49 +53,66 @@ inline const char* error_text(Error e) {
 struct Command {
     Op op{}; unsigned axis{}; double value{}; bool enabled{}; uint64_t id{};
     ControllerConfig controller{}; ProfileId profile{};
+    uint64_t order=0;
+    bool input=false;
 };
 struct Sample {
     Telemetry telemetry{};
     uint64_t number=0, timestamp=0, command_id=0, record_id=0;
-    std::array<double,2> target{}, reference{}, position{};
-    std::array<double,2> pwm{}, scale{counts_per_mm,counts_per_mm}, minimum{-50,-50}, maximum{50,50};
-    std::array<uint8_t,2> mode{}; // 0: position, 1: direct normalized DSP duty.
-    std::array<int32_t,2> zero{};
-    std::array<bool,2> selected{};
-    std::array<Tuning,2> tuning{};
-    std::array<ControllerConfig,2> controllers{};
-    std::array<ProfileId,2> profiles{};
-    std::array<uint64_t,2> controller_revision{};
+    std::array<double,6> target{}, reference{}, position{};
+    std::array<double,6> pwm{}, scale{counts_per_mm,counts_per_mm}, minimum{-50,-50}, maximum{50,50};
+    std::array<uint8_t,6> mode{0,0,1,1,1,1}; // 0: position, 1: direct normalized DSP duty.
+    std::array<int32_t,6> zero{};
+    std::array<bool,6> selected{};
+    std::array<bool,6> position_configured{true,true,false,false,false,false};
+    std::array<Tuning,6> tuning{};
+    std::array<ControllerConfig,6> controllers{};
+    std::array<ProfileId,6> profiles{};
+    std::array<uint64_t,6> controller_revision{};
     uint16_t digital_out=0;
     std::array<uint16_t,2> analog_out{};
     bool system=false, connected=false;
     Error fault=Error::none, command_error=Error::none;
     uint64_t deadlines=0, errors=0, dropped=0;
+    uint64_t input_rejections=0, feedback_received_ns=0, telemetry_count=0, dsp_restarts=0;
+    Error input_error=Error::none;
+    unsigned input_channel=0;
+    Op input_operation=Op::target;
     double max_cycle_us=0, max_lateness_us=0;
 };
 class Control {
 public:
     Sample state{};
-    std::array<AxisController,2> pid{};
+    std::array<AxisController,6> pid{};
     double speed_mm_s=20, tracking_limit_mm=15;
     bool initialized=false, dsp_clear_requested=false;
     uint16_t mask() const {
         if (!state.system || state.fault!=Error::none || !state.connected) return 0;
-        return (state.selected[0]?1:0)|(state.selected[1]?2:0);
+        uint16_t selected=0;
+        for(unsigned a=0;a<kAxes;a++)if(state.selected[a])selected|=1U<<a;
+        return selected;
     }
     bool enabled(unsigned axis) const { return (mask() & (1U<<axis))!=0; }
-    void receive(const Telemetry& t) {
+    void dsp_restarted() {
+        fail(Error::telemetry);initialized=false;dsp_clear_requested=false;
+        state.record_id=0;++state.dsp_restarts;
+    }
+    void receive(const Telemetry& t,bool synchronized=true) {
         state.telemetry=t;
+        state.feedback_received_ns=std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();
+        ++state.telemetry_count;
+        if(!synchronized){state.connected=false;return;}
         if(t.fault && !dsp_clear_requested)fail(Error::dsp);
         state.connected=true;
         if (!initialized) {
-            for(unsigned a=0;a<2;a++) state.zero[a]=t.position[a];
+            for(unsigned a=0;a<kAxes;a++) state.zero[a]=t.position[a];
             state.timestamp=t.timestamp_us;
             initialized=true;
         } else state.timestamp+=static_cast<uint32_t>(t.timestamp_us-last_time_);
         last_time_=t.timestamp_us;
-        for(unsigned a=0;a<2;a++) {
-            state.position[a]=(static_cast<double>(t.position[a])-state.zero[a])/state.scale[a];
+        for(unsigned a=0;a<kAxes;a++) {
+            state.position[a]=state.position_configured[a] ?
+                (static_cast<double>(t.position[a])-state.zero[a])/state.scale[a] : 0;
             state.tuning[a]=pid[a].tuning();
             state.controllers[a]=pid[a].config;
         }
@@ -107,7 +124,19 @@ public:
         for(auto& p:pid) p.reset();
     }
     void apply(const Command& c) {
-        state.command_id=c.id; state.command_error=Error::none;
+        const auto previous_error=state.command_error;
+        state.command_error=Error::none;
+        apply_command(c);
+        if(c.input) {
+            if(state.command_error!=Error::none) {
+                ++state.input_rejections;state.input_error=state.command_error;
+                state.input_channel=c.axis;state.input_operation=c.op;
+            }
+            state.command_error=previous_error;
+        } else if(c.id) state.command_id=c.id;
+    }
+private:
+    void apply_command(const Command& c) {
         const auto a=c.axis;
         const auto before=mask();
         if(c.op==Op::digital || c.op==Op::analog){
@@ -119,26 +148,32 @@ public:
             else state.analog_out[a]=static_cast<uint16_t>(c.value);
             return;
         }
-        if (a>=2) { state.command_error=Error::range; return; }
+        if (a>=kAxes) { state.command_error=Error::range; return; }
         switch(c.op) {
         case Op::stop: state.system=false; state.selected={false,false}; state.pwm={0,0}; state.digital_out=0;state.analog_out={0,0};break;
         case Op::clear:
             if (mask()!=0) { state.command_error=Error::disabled_required; return; }
-            dsp_clear_requested=true;state.fault=Error::none; state.system=false; state.selected={false,false}; break;
+            if(state.telemetry.fault) {state.command_error=Error::dsp;return;}
+            state.fault=Error::none; state.system=false; state.selected={}; break;
+        case Op::clear_dsp:
+            if(state.system || state.telemetry.arm_mask) {state.command_error=Error::disabled_required;return;}
+            if(!state.connected) {state.command_error=Error::not_ready;return;}
+            dsp_clear_requested=true;break;
         case Op::system:
         case Op::axis:
             if(c.enabled && (!state.connected || state.fault!=Error::none || dsp_clear_requested)) {
                 state.command_error=Error::not_ready; return;
             }
-            for(unsigned i=0;i<2;i++) {
+            for(unsigned i=0;i<kAxes;i++) {
                 const bool activating=c.op==Op::system ? state.selected[i] : state.system && i==a;
-                if(c.enabled && activating && (state.position[i]<state.minimum[i] || state.position[i]>state.maximum[i])) {
+                if(c.enabled && activating && state.position_configured[i] && (state.position[i]<state.minimum[i] || state.position[i]>state.maximum[i])) {
                     state.command_error=Error::zero_required; return;
                 }
             }
             if(c.op==Op::system){state.system=c.enabled;if(!c.enabled){state.digital_out=0;state.analog_out={0,0};}}else state.selected[a]=c.enabled;
             break;
         case Op::target:
+            if(!state.position_configured[a]) {state.command_error=Error::not_ready;return;}
             if(state.mode[a]!=0) {state.command_error=Error::wrong_mode; return;}
             if(!std::isfinite(c.value) || c.value<state.minimum[a] || c.value>state.maximum[a]) {state.command_error=Error::range; return;}
             state.target[a]=c.value; break;
@@ -149,10 +184,12 @@ public:
         case Op::mode:
             if(enabled(a)) {state.command_error=Error::disabled_required; return;}
             if(c.value!=0 && c.value!=1) {state.command_error=Error::range; return;}
+            if(c.value==0 && !state.position_configured[a]) {state.command_error=Error::not_ready;return;}
             state.mode[a]=static_cast<uint8_t>(c.value);state.pwm[a]=0;
             state.target[a]=std::clamp(state.position[a],state.minimum[a],state.maximum[a]);
             state.reference[a]=state.position[a];pid[a].reset();break;
         case Op::zero:
+            if(!state.position_configured[a]) {state.command_error=Error::not_ready;return;}
             if(enabled(a)) {state.command_error=Error::disabled_required; return;}
             if(!state.connected) {state.command_error=Error::not_ready; return;}
             state.zero[a]=state.telemetry.position[a];
@@ -161,6 +198,7 @@ public:
             pid[a].reset(); break;
         case Op::record: state.record_id=static_cast<uint64_t>(c.value); break;
         case Op::controller:
+            if(!state.position_configured[a]) {state.command_error=Error::not_ready;return;}
             if(enabled(a)&&c.controller.type!=pid[a].config.type) {state.command_error=Error::disabled_required;return;}
             if(!valid_controller(c.controller)) {state.command_error=Error::range;return;}
             pid[a].configure(c.controller,enabled(a));
@@ -181,7 +219,7 @@ public:
             pid[a].configure(candidate,enabled(a));state.controller_revision[a]++;break;
         }
         const auto after=mask();
-        for(unsigned i=0;i<2;i++) {
+        for(unsigned i=0;i<kAxes;i++) {
             if((before^after)&(1U<<i)) {
                 pid[i].reset(); state.reference[i]=state.position[i];
                 state.target[i]=std::clamp(state.position[i],state.minimum[i],state.maximum[i]);
@@ -189,12 +227,13 @@ public:
             }
         }
     }
+public:
     Values duty() {
         Values result{};
-        for(unsigned a=0;a<2;a++) {
+        for(unsigned a=0;a<kAxes;a++) {
             if(!enabled(a)) {pid[a].reset(); continue;}
             if(state.mode[a]==1) {
-                if(state.position[a]<state.minimum[a] || state.position[a]>state.maximum[a]) {fail(Error::travel);return {};}
+                if(state.position_configured[a] && (state.position[a]<state.minimum[a] || state.position[a]>state.maximum[a])) {fail(Error::travel);return {};}
                 result[a]=static_cast<float>(std::clamp(state.pwm[a],-pid[a].limit,pid[a].limit));
                 continue;
             }

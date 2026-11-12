@@ -1,8 +1,15 @@
 #include "bridge/control.hpp"
 #include "bridge/profiles.hpp"
 #include "bridge/diagnostics.hpp"
+#include "bridge/inputs.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <interfaces/msg/bridge_state.hpp>
+#include <interfaces/msg/command_result.hpp>
+#include <interfaces/msg/position_command.hpp>
+#include <interfaces/msg/duty_command.hpp>
+#include <interfaces/msg/digital_command.hpp>
+#include <interfaces/msg/analog_command.hpp>
+#include <interfaces/srv/dsp_command.hpp>
 #include <interfaces/srv/command.hpp>
 #include <interfaces/srv/controller_catalog.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -29,23 +36,29 @@ public:
         core_.speed_mm_s=declare_parameter("speed_mm_s",20.0);
         core_.tracking_limit_mm=declare_parameter("tracking_limit_mm",15.0);
         profiles_=std::make_unique<Profiles>(declare_parameter("controller_directory",std::string("projects/")+DIAMOND_PROJECT_ID+"/controllers"));
-        for(unsigned a=0;a<2;a++) {
+        for(unsigned a=0;a<kAxes;a++) {
             const auto key="axis"+std::to_string(a)+".";
             auto& controller=core_.pid[a];
+            const bool position=declare_parameter(key+"position_control",a<2);
+            core_.state.position_configured[a]=position;
+            core_.state.mode[a]=position?0:1;
             core_.state.scale[a]=declare_parameter(key+"counts_per_mm",counts_per_mm);
             core_.state.minimum[a]=declare_parameter(key+"minimum_mm",-50.0);
             core_.state.maximum[a]=declare_parameter(key+"maximum_mm",50.0);
-            if(!std::isfinite(core_.state.scale[a]) || core_.state.scale[a]<=0 ||
+            if(position && (!std::isfinite(core_.state.scale[a]) || core_.state.scale[a]<=0 ||
                !std::isfinite(core_.state.minimum[a]) || !std::isfinite(core_.state.maximum[a]) ||
-               core_.state.minimum[a]>=core_.state.maximum[a] || core_.state.minimum[a]>0 || core_.state.maximum[a]<0)
+               core_.state.minimum[a]>=core_.state.maximum[a] || core_.state.minimum[a]>0 || core_.state.maximum[a]<0))
                 throw std::runtime_error("Invalid axis calibration or travel range");
             controller.sign=declare_parameter(key+"motor_sign",-1.0);
             controller.limit=declare_parameter(key+"duty_limit",1.0);
             if((controller.sign!=1&&controller.sign!=-1)||!(controller.limit>0&&controller.limit<=1))
                 throw std::runtime_error("Invalid axis tuning");
-            const auto profile=profiles_->load(declare_parameter(key+"controller_profile",std::string("bench_pid")));
-            controller.configure(profile.controller,false);
-            core_.state.profiles[a]=profile.id;
+            const auto profile_name=declare_parameter(key+"controller_profile",position?std::string("bench_pid"):std::string{});
+            if(position) {
+                const auto profile=profiles_->load(profile_name);
+                controller.configure(profile.controller,false);
+                core_.state.profiles[a]=profile.id;
+            }
         }
         if(!(core_.speed_mm_s>0&&core_.speed_mm_s<=100)||!(core_.tracking_limit_mm>0&&core_.tracking_limit_mm<=100))
             throw std::runtime_error("Invalid motion limits");
@@ -53,6 +66,27 @@ public:
         diagnostics_.open(fs::path(directory_)/"realtime-events.jsonl",std::ios::app);
         if(!diagnostics_)throw std::runtime_error("Cannot open real-time event log");
         publisher_=create_publisher<interfaces::msg::BridgeState>("/bridge/state",rclcpp::QoS(1).reliable());
+        dsp_publisher_=create_publisher<interfaces::msg::DspState>("/dsp/state",rclcpp::QoS(1).reliable());
+        // Keep DDS callbacks outside the RT thread. Values are volatile, bounded depth 16,
+        // then coalesced per channel in an allocation-free mailbox.
+        const auto input_qos=rclcpp::QoS(16).reliable().durability_volatile();
+        target_sub_=create_subscription<interfaces::msg::PositionCommand>("/bridge/target",input_qos,
+            [this](const interfaces::msg::PositionCommand& m){input(Op::target,m.axis,m.position_mm);});
+        duty_sub_=create_subscription<interfaces::msg::DutyCommand>("/dsp/duty",input_qos,
+            [this](const interfaces::msg::DutyCommand& m){input(Op::pwm,m.axis,m.duty);});
+        digital_sub_=create_subscription<interfaces::msg::DigitalCommand>("/dsp/digital_out",input_qos,
+            [this](const interfaces::msg::DigitalCommand& m){input(Op::digital,m.channel,m.value?1:0);});
+        analog_sub_=create_subscription<interfaces::msg::AnalogCommand>("/dsp/analog_out",input_qos,
+            [this](const interfaces::msg::AnalogCommand& m){input(Op::analog,m.channel,m.value);});
+        dsp_service_=create_service<interfaces::srv::DspCommand>("/dsp/command",
+            [this](const std::shared_ptr<interfaces::srv::DspCommand::Request> request,
+                   std::shared_ptr<interfaces::srv::DspCommand::Response> response) {
+                Command c{};
+                if(request->operation==interfaces::srv::DspCommand::Request::DISARM){c.op=Op::stop;stop_=true;}
+                else if(request->operation==interfaces::srv::DspCommand::Request::CLEAR_FAULT)c.op=Op::clear_dsp;
+                else {response->message="Unsupported DSP operation (v5 has no reboot command)";return;}
+                enqueue(c,*response);
+            });
         joints_=create_publisher<sensor_msgs::msg::JointState>("/joint_states",rclcpp::SensorDataQoS());
         service_=create_service<interfaces::srv::Command>("/bridge/command",
             [this](const std::shared_ptr<interfaces::srv::Command::Request> request,
@@ -60,6 +94,9 @@ public:
         catalog_=create_service<interfaces::srv::ControllerCatalog>("/bridge/controllers",
             [this](const std::shared_ptr<interfaces::srv::ControllerCatalog::Request>,
                    std::shared_ptr<interfaces::srv::ControllerCatalog::Response> response) { catalog(*response); });
+        result_publisher_=create_publisher<interfaces::msg::CommandResult>("/bridge/command_result",rclcpp::QoS(256).reliable());
+        next_command_=static_cast<uint64_t>(Clock::now().time_since_epoch().count());
+        core_.state.command_id=next_command_;
         timer_=create_wall_timer(std::chrono::milliseconds(20),[this]{ drain(); publish(); });
         worker_=std::thread([this]{ run(); });
         RCLCPP_INFO(get_logger(),"%s bridge started disarmed",mock_?"Mock":"Physical SPI");
@@ -75,6 +112,10 @@ private:
     Control core_;
     std::unique_ptr<Profiles> profiles_;
     Queue<Command,128> commands_;
+    Inputs inputs_;
+    struct Result {uint64_t id;Error error;};
+    Queue<Result,256> results_;
+    std::atomic<uint64_t> lost_results_{0};
     Queue<Sample,4096> samples_;
     Queue<RealtimeEvent,256> events_;
     std::atomic<uint64_t> lost_events_{0},lost_periods_{0};
@@ -83,12 +124,19 @@ private:
     std::atomic<bool> quit_{false},stop_{false};
     std::thread worker_;
     Sample latest_{};
-    uint64_t next_command_=0,record_id_=0,recorded_=0,last_recorded_sample_=0;
+    uint64_t next_command_=0,next_order_=0,last_dsp_sample_=0,record_start_restarts_=0,record_id_=0,recorded_=0,last_recorded_sample_=0;
     bool stopping_record_=false;
     std::ofstream csv_;
     std::string recording_file_,recording_error_;
     rclcpp::Publisher<interfaces::msg::BridgeState>::SharedPtr publisher_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joints_;
+    rclcpp::Publisher<interfaces::msg::DspState>::SharedPtr dsp_publisher_;
+    rclcpp::Publisher<interfaces::msg::CommandResult>::SharedPtr result_publisher_;
+    rclcpp::Subscription<interfaces::msg::PositionCommand>::SharedPtr target_sub_;
+    rclcpp::Subscription<interfaces::msg::DutyCommand>::SharedPtr duty_sub_;
+    rclcpp::Subscription<interfaces::msg::DigitalCommand>::SharedPtr digital_sub_;
+    rclcpp::Subscription<interfaces::msg::AnalogCommand>::SharedPtr analog_sub_;
+    rclcpp::Service<interfaces::srv::DspCommand>::SharedPtr dsp_service_;
     rclcpp::Service<interfaces::srv::Command>::SharedPtr service_;
     rclcpp::Service<interfaces::srv::ControllerCatalog>::SharedPtr catalog_;
     rclcpp::TimerBase::SharedPtr timer_;
@@ -116,13 +164,19 @@ private:
         } catch(const std::exception& e){out.errors.push_back(e.what());}
     }
 
+    void input(Op op,unsigned channel,double value) {
+        Command c{op,channel,value};c.order=++next_order_;inputs_.publish(c);
+    }
+    template<class Response> void enqueue(Command c,Response& out) {
+        c.id=next_command_+1;c.order=++next_order_;
+        if(!commands_.push(c)) {out.message="Control command queue is full";return;}
+        next_command_=c.id;out.accepted=true;out.command_id=c.id;out.message="Queued; observe bridge state for application";
+    }
     void command(const interfaces::srv::Command::Request& req,interfaces::srv::Command::Response& out) {
         Command c{}; c.axis=req.axis; c.value=req.value; c.enabled=req.enabled;
-        if((c.axis>=2 && !(req.operation=="digital"&&c.axis<4))||!std::isfinite(c.value)) {out.message="Invalid axis or non-finite value";return;}
+        if(c.axis>=kAxes||!std::isfinite(c.value)) {out.message="Invalid axis or non-finite value";return;}
         const auto& op=req.operation;
-        if(op=="target") c.op=Op::target;
-        else if(op=="pwm") c.op=Op::pwm;
-        else if(op=="mode") c.op=Op::mode;
+        if(op=="mode") c.op=Op::mode;
         else if(op=="axis") c.op=Op::axis;
         else if(op=="system") c.op=Op::system;
         else if(op=="stop") {c.op=Op::stop;stop_=true;}
@@ -132,8 +186,6 @@ private:
         else if(op=="ki") c.op=Op::ki;
         else if(op=="kd") c.op=Op::kd;
         else if(op=="limit") c.op=Op::limit;
-        else if(op=="digital") c.op=Op::digital;
-        else if(op=="analog") c.op=Op::analog;
         else if(op=="controller_apply"||op=="profile_load"||op=="profile_save"||op=="profile_create") {
             drain();
             if(!latest_.connected){out.message="Control bridge is not connected";return;}
@@ -165,6 +217,7 @@ private:
             csv_<<"# project="<<DIAMOND_PROJECT_ID<<"; axis0_counts_per_mm="<<std::setprecision(15)<<latest_.scale[0]
                 <<"; axis1_counts_per_mm="<<latest_.scale[1]<<"; mock="<<mock_<<"\n";
             csv_<<"timestamp_us,sample,axis0_target_mm,axis0_reference_mm,axis0_position_mm,axis0_raw_counts,axis0_zero_counts,axis0_requested_duty,axis0_output_duty,axis0_enabled,axis0_kp,axis0_ki,axis0_kd,axis0_duty_limit,axis0_mode,axis0_pwm_target,axis1_target_mm,axis1_reference_mm,axis1_position_mm,axis1_raw_counts,axis1_zero_counts,axis1_requested_duty,axis1_output_duty,axis1_enabled,axis1_kp,axis1_ki,axis1_kd,axis1_duty_limit,axis1_mode,axis1_pwm_target,dsp_sequence,dsp_command_sequence,dsp_arm_mask,dsp_fault,digital_in,digital_out,analog_valid,ai0_raw,ai1_raw,ai2_raw,ai3_raw,ai4_raw,ai5_raw,ao0_raw,ao1_raw,encoder_valid,encoder0_counts,encoder1_counts,encoder2_counts,encoder3_counts,encoder4_counts,encoder5_counts,axis0_controller_type,axis0_controller_profile,axis0_controller_parameters,axis1_controller_type,axis1_controller_profile,axis1_controller_parameters\n";
+            record_start_restarts_=latest_.dsp_restarts;
             recorded_=0;last_recorded_sample_=0; recording_error_.clear(); stopping_record_=false;
             record_id_++;
             c.op=Op::record;c.value=static_cast<double>(record_id_);
@@ -172,13 +225,11 @@ private:
             if(!csv_.is_open()) {out.message="No recording active";return;}
             c.op=Op::record;c.value=0;stopping_record_=true;
         } else {out.message="Unknown operation";return;}
-        c.id=++next_command_;
-        if(!commands_.push(c)) {
+        enqueue(c,out);
+        if(!out.accepted) {
             if(op=="record_start") finish_recording();
             if(op=="record_stop") stopping_record_=false;
-            out.message="Control command queue is full";return;
         }
-        out.accepted=true;out.command_id=c.id;out.message="Queued";
     }
 
     void finish_recording() {
@@ -188,6 +239,13 @@ private:
         csv_.close();csv_.clear();stopping_record_=false;
     }
     void drain() {
+        Result result;
+        while(results_.pop(result)) {
+            interfaces::msg::CommandResult msg;msg.command_id=result.id;
+            msg.applied=result.error==Error::none;msg.message=error_text(result.error);
+            result_publisher_->publish(msg);
+        }
+        if(const auto lost=lost_results_.exchange(0))RCLCPP_ERROR(get_logger(),"Command result queue overflow: %lu results lost",lost);
         RealtimeEvent event;
         while(events_.pop(event)) {
             write_event(diagnostics_,event);diagnostics_.flush();
@@ -209,6 +267,10 @@ private:
         Sample s;
         while(samples_.pop(s)) {
             latest_=s;
+            if(csv_.is_open() && s.dsp_restarts!=record_start_restarts_) {
+                recording_error_="Recording ended because the DSP restarted; a new startup zero was established";
+                finish_recording();
+            }
             if(csv_.is_open() && s.record_id==record_id_ && s.connected && s.number!=last_recorded_sample_) {
                 last_recorded_sample_=s.number;
                 csv_<<s.timestamp<<','<<s.number;
@@ -248,7 +310,7 @@ private:
         msg.sample_count=s.number;msg.timestamp_us=s.timestamp;msg.connected=s.connected;msg.mock=mock_;
         msg.system_enabled=s.system;msg.position_mm=s.position;msg.target_mm=s.target;msg.reference_mm=s.reference;
         msg.zero_counts=s.zero;
-        for(unsigned a=0;a<2;a++) {
+        for(unsigned a=0;a<kAxes;a++) {
             msg.controllers[a]=profile_message(s.profiles[a],s.controllers[a]);
             msg.raw_counts[a]=s.telemetry.position[a];msg.requested_duty[a]=s.telemetry.requested_duty[a];
             msg.output_duty[a]=s.telemetry.duty[a];msg.axis_enabled[a]=s.selected[a];
@@ -258,15 +320,23 @@ private:
         msg.deadline_misses=s.deadlines;msg.telemetry_errors=s.errors;msg.dropped_samples=s.dropped;
         msg.max_cycle_us=s.max_cycle_us;msg.max_lateness_us=s.max_lateness_us;
         msg.protocol_version=PCD_VERSION;msg.control_rate_hz=kRateHz;
-        msg.dsp_state=s.telemetry.state;msg.dsp_arm_mask=s.telemetry.arm_mask;msg.dsp_fault=s.telemetry.fault;
-        msg.dsp_sequence=s.telemetry.sequence;msg.dsp_command_sequence=s.telemetry.command_sequence;
-        std::copy_n(s.telemetry.position,6,msg.encoder_counts.begin());
-        msg.encoder_valid=s.telemetry.encoder_valid;msg.digital_in=s.telemetry.digital_in;msg.digital_out=s.telemetry.digital_out;
-        msg.analog_valid=s.telemetry.analog_valid;msg.analog_out_valid=s.telemetry.analog_out_valid;
-        std::copy_n(s.telemetry.analog_in,6,msg.analog_in.begin());std::copy_n(s.telemetry.analog_out,2,msg.analog_out.begin());
-        msg.dsp_invalid_frames=s.telemetry.invalid_frames;msg.dsp_rejected_commands=s.telemetry.rejected_commands;
-        msg.dsp_watchdogs=s.telemetry.watchdogs;msg.encoder_errors=s.telemetry.encoder_errors;
-        msg.cpu2_max_poll_us=s.telemetry.cpu2_max_poll_us;
+        msg.dsp_restarts=s.dsp_restarts;
+        msg.position_configured=s.position_configured;
+        msg.feedback_age_ms=s.feedback_received_ns ?
+            (std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count()-s.feedback_received_ns)/1e6 : -1;
+        msg.input_rejections=s.input_rejections;msg.input_error=error_text(s.input_error);msg.input_channel=s.input_channel;
+        msg.input_topic=s.input_operation==Op::target?"/bridge/target":s.input_operation==Op::pwm?"/dsp/duty":
+            s.input_operation==Op::digital?"/dsp/digital_out":"/dsp/analog_out";
+        const auto& t=s.telemetry;auto& d=msg.dsp;
+        d.timestamp_us=t.timestamp_us;d.sequence=t.sequence;d.session=t.session;d.command_sequence=t.command_sequence;
+        d.state=t.state;d.arm_mask=t.arm_mask;d.fault=t.fault;d.encoder_valid=t.encoder_valid;
+        d.digital_in=t.digital_in;d.digital_out=t.digital_out;d.analog_valid=t.analog_valid;d.analog_out_valid=t.analog_out_valid;
+        std::copy_n(t.analog_in,6,d.analog_in.begin());std::copy_n(t.analog_out,2,d.analog_out.begin());
+        std::copy_n(t.position,6,d.position.begin());std::copy_n(t.reference,6,d.reference.begin());
+        std::copy_n(t.requested_duty,6,d.requested_duty.begin());std::copy_n(t.duty,6,d.duty.begin());
+        d.invalid_frames=t.invalid_frames;d.rejected_commands=t.rejected_commands;d.command_timeout_count=t.watchdogs;
+        d.encoder_errors=t.encoder_errors;d.cpu2_max_poll_us=t.cpu2_max_poll_us;
+        if(s.telemetry_count!=last_dsp_sample_) {dsp_publisher_->publish(d);last_dsp_sample_=s.telemetry_count;}
         msg.recording=csv_.is_open();msg.recording_file=recording_file_;msg.recorded_samples=recorded_;
         msg.recording_error=recording_error_;
         publisher_->publish(msg);
@@ -280,7 +350,7 @@ private:
         bool realtime_ready=mock_;
         try {if(!mock_) link=std::make_unique<SpiLink>(device_.c_str());}
         catch(const std::exception& e) {RCLCPP_ERROR(get_logger(),"SPI setup: %s",e.what());core_.fail(Error::telemetry);core_.state.errors++;}
-        if(!mock_ && link) {
+        if(!mock_) {
             cpu_set_t cpu;CPU_ZERO(&cpu);CPU_SET(3,&cpu);
             sched_param priority{};priority.sched_priority=80;
             if(pthread_setaffinity_np(pthread_self(),sizeof(cpu),&cpu)!=0 ||
@@ -289,9 +359,11 @@ private:
             } else realtime_ready=true;
         }
         Telemetry simulated{};
-        std::array<double,2> mock_position{};
+        std::array<double,6> mock_position{};
         uint16_t sent_mask=0;bool sent_active=false;
-        auto scheduled=Clock::now();
+        auto scheduled=Clock::now(),next_open=scheduled+std::chrono::seconds(1),last_error_log=Clock::time_point{};
+        std::array<char,160> previous_error{};
+        uint64_t repeated_errors=0;
         CycleHistory history;
         uint64_t iteration=0;
         while(!quit_) {
@@ -299,9 +371,15 @@ private:
             const auto deadline=scheduled+control_period;
             const auto late=std::chrono::duration<double,std::micro>(begin-scheduled).count();
             core_.state.max_lateness_us=std::max(core_.state.max_lateness_us,late);
-            Command c;
+            std::array<Command,128+Inputs::count> pending;
             uint16_t commands=0;
-            for(;commands<128 && commands_.pop(c);++commands) core_.apply(c);
+            for(;commands<128 && commands_.pop(pending[commands]);++commands){}
+            commands+=inputs_.take(pending.data()+commands);
+            std::sort(pending.begin(),pending.begin()+commands,[](const Command& a,const Command& b){return a.order<b.order;});
+            for(unsigned i=0;i<commands;i++) {
+                const auto& command=pending[i];core_.apply(command);
+                if(!command.input && !results_.push({command.id,core_.state.command_error}))++lost_results_;
+            }
             // Stop wins over queued enables, even when the command queue was full.
             if(stop_.exchange(false)) core_.apply({Op::stop,0,0,false,core_.state.command_id});
             if(link && !realtime_ready) core_.fail(Error::realtime);
@@ -310,15 +388,20 @@ private:
             uint16_t operation=0;
             std::array<char,160> error{};
             try {
+                if(!mock_ && !link && begin>=next_open) {
+                    next_open=begin+std::chrono::seconds(1);
+                    link=std::make_unique<SpiLink>(device_.c_str());
+                }
                 if(mock_) {
                     core_.dsp_clear_requested=false;
-                    simulated.timestamp_us+=1'000'000/kRateHz;simulated.sequence++;
+                    simulated.session=1;
+                    simulated.timestamp_us+=1'000'000/kRateHz;simulated.sequence++;simulated.command_sequence++;
                     simulated.encoder_valid=63;simulated.arm_mask=mask;simulated.state=core_.state.system?1:0;
                     simulated.analog_valid=63;simulated.analog_out_valid=3;
                     simulated.digital_in=simulated.digital_out=core_.state.digital_out;
                     std::copy(core_.state.analog_out.begin(),core_.state.analog_out.end(),simulated.analog_out);
                     std::copy(core_.state.analog_out.begin(),core_.state.analog_out.end(),simulated.analog_in);
-                    for(unsigned a=0;a<2;a++) {
+                    for(unsigned a=0;a<kAxes;a++) {
                         // shortcut: deterministic first-order plant, use hardware for controller validation.
                         if(mask&(1U<<a)) {
                             if(core_.state.mode[a]==1) mock_position[a]+=values[a]*core_.pid[a].sign*50*dt*core_.state.scale[a];
@@ -333,17 +416,23 @@ private:
                         (!sent_active||mask!=sent_mask)?PCD_ARM:PCD_CYCLE;
                     operation=op;
                     std::array<int32_t,6> references{};
-                    for(unsigned a=0;a<2;a++) references[a]=static_cast<int32_t>(static_cast<uint32_t>(
+                    for(unsigned a=0;a<kAxes;a++) references[a]=static_cast<int32_t>(static_cast<uint32_t>(
                         std::llround(core_.state.zero[a]+core_.state.reference[a]*core_.state.scale[a])));
                     const auto telemetry=link->exchange(op,op==PCD_CYCLE?values:Values{},mask,references,
                         core_.state.digital_out,core_.state.analog_out);
-                    for(unsigned a=0;a<2;a++) if(!std::isfinite(telemetry.duty[a])||!std::isfinite(telemetry.requested_duty[a]))
+                    for(unsigned a=0;a<kAxes;a++) if(!std::isfinite(telemetry.duty[a])||!std::isfinite(telemetry.requested_duty[a]))
                         throw std::runtime_error("Invalid numeric telemetry");
                     if(core_.dsp_clear_requested && !telemetry.fault){
                         core_.dsp_clear_requested=false;
-                        if(core_.state.fault==Error::dsp)core_.state.fault=Error::none;
                     }
-                    core_.receive(telemetry);sent_mask=mask;sent_active=core_.state.system;
+                    if(link->session().rebooted)core_.dsp_restarted();
+                    if(link->session().changed) {
+                        core_.fail(Error::telemetry);++core_.state.errors;
+                        std::strcpy(error.data(),"DSP session changed; resynchronizing disarmed");
+                    }
+                    core_.receive(telemetry,link->session().ready);
+                    sent_mask=link->session().ready?mask:0;
+                    sent_active=link->session().ready&&core_.state.system;
 
                 }
             } catch(const std::exception& e) {
@@ -352,6 +441,7 @@ private:
                 // Initial SPI pipeline fill is expected while all outputs are disabled.
                 if(core_.initialized || core_.state.errors>10) core_.fail(Error::telemetry);
                 core_.state.connected=false;sent_mask=0;sent_active=false;
+                if(link)link->resynchronize();
             }
             const auto end=Clock::now();
             const auto work_us=std::chrono::duration<double,std::micro>(end-begin).count();
@@ -360,11 +450,19 @@ private:
             history.push({++iteration,static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(begin.time_since_epoch()).count()),
                 work_us,late,link?link->diagnostics().duration_ns/1000.0:0,core_.state.telemetry.sequence,
                 core_.state.telemetry.timestamp_us,core_.state.telemetry.command_sequence,operation,mask,commands});
-            if(!mock_ && (error[0] || end>deadline)) {
+            const bool new_error=error!=previous_error;
+            const bool report_error=error[0] && (new_error || end-last_error_log>=std::chrono::seconds(1));
+            const bool recovered=core_.state.connected && !error[0] && previous_error[0];
+            if(!mock_ && (report_error || recovered || end>deadline)) {
                 RealtimeEvent event;history.copy(event);event.deadline=missed!=0;event.missed_periods=missed;event.error=error;
+                event.repeated_errors=repeated_errors;event.telemetry_errors=core_.state.errors;
+                if(recovered)std::strcpy(event.error.data(),"SPI frames resumed; outputs remain disarmed");
+                repeated_errors=0;last_error_log=end;
                 if(link)event.spi=link->diagnostics();
                 if(!events_.push(event)){++lost_events_;lost_periods_+=missed;}
             }
+            else if(error[0])++repeated_errors;
+            previous_error=error;
             if(end>deadline) {
                 core_.state.deadlines+=missed;
                 // Mock uses ordinary scheduling; only hardware enforces the RT deadline.

@@ -1,0 +1,7 @@
+uint8 DISARM=0
+uint8 CLEAR_FAULT=1
+uint8 operation
+---
+bool accepted
+uint64 command_id
+string message

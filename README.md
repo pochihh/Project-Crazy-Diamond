@@ -31,6 +31,8 @@ See [project profiles and controller development](projects/README.md).
 
 ## Documentation
 
+- [ROS bridge architecture, topics, services and DSP/UI data flow](ros2_ws/README.md)
+
 - [Git synchronization and Pi deployment](PLAN/GIT_WORKFLOW.md)
 - [Current system and working SPI contract](PLAN/CURRENT_SYSTEM.md)
 - [Real-time fault logs and stability checks](PLAN/REALTIME_STABILITY.md)

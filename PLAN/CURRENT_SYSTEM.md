@@ -1,3 +1,7 @@
+> ROS bridge cleanup: the current API and data flow are documented in
+> [ros2_ws/README.md](../ros2_ws/README.md). The DSP firmware and wire protocol
+> remain v5. Earlier interface descriptions below are historical where they differ.
+
 # Current system
 
 Updated: 2026-11-11. The v5 migration passed the agreed bench acceptance; consult

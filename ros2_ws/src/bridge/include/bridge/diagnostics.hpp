@@ -19,7 +19,7 @@ struct RealtimeEvent {
     std::array<CycleTrace,8> history{};
     unsigned count=0;
     bool deadline=false;
-    uint64_t missed_periods=0;
+    uint64_t missed_periods=0,repeated_errors=0,telemetry_errors=0;
     std::array<char,160> error{};
     SpiTransferInfo spi{};
 };
@@ -41,6 +41,7 @@ private:
 inline void write_event(std::ostream& out,const RealtimeEvent& event) {
     out<<"{\"deadline\":"<<(event.deadline?"true":"false")<<",\"missed_periods\":"<<event.missed_periods
        <<",\"period_us\":"<<control_period.count()<<",\"error\":"<<std::quoted(event.error.data())
+       <<",\"repeated_errors\":"<<event.repeated_errors<<",\"telemetry_errors\":"<<event.telemetry_errors
        <<",\"ioctl_result\":"<<event.spi.result<<",\"errno\":"<<event.spi.error<<",\"history\":[";
     for(unsigned i=0;i<event.count;++i) {
         const auto& t=event.history[i];

@@ -18,8 +18,8 @@ from rclpy.node import Node
 from rosidl_runtime_py.convert import message_to_ordereddict
 from rosidl_runtime_py.utilities import get_message
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from interfaces.msg import BridgeState
-from interfaces.srv import Command, ControllerCatalog
+from interfaces.msg import BridgeState, CommandResult, PositionCommand, DutyCommand, DigitalCommand, AnalogCommand
+from interfaces.srv import Command, ControllerCatalog, DspCommand
 from ui_bridge.system_status import SystemStatus
 
 
@@ -31,13 +31,35 @@ class RosClient(Node):
         self.sequence = 0
         self.instance = uuid.uuid4().hex
         self.client = self.create_client(Command, '/bridge/command')
+        self.dsp_client = self.create_client(DspCommand, '/dsp/command')
+        self.inputs = {
+            'target': (self.create_publisher(PositionCommand, '/bridge/target', 16), PositionCommand, 'axis', 'position_mm'),
+            'pwm': (self.create_publisher(DutyCommand, '/dsp/duty', 16), DutyCommand, 'axis', 'duty'),
+            'digital': (self.create_publisher(DigitalCommand, '/dsp/digital_out', 16), DigitalCommand, 'channel', 'value'),
+            'analog': (self.create_publisher(AnalogCommand, '/dsp/analog_out', 16), AnalogCommand, 'channel', 'value'),
+        }
         self.catalog_client = self.create_client(ControllerCatalog, '/bridge/controllers')
+        self.results = {}
+        self.result_subscription = self.create_subscription(CommandResult, '/bridge/command_result', self.result, 256)
         self.subscription = self.create_subscription(BridgeState, '/bridge/state', self.update, 1)
+
+    def result(self, message):
+        self.results[message.command_id] = message
+        while len(self.results) > 256:
+            del self.results[next(iter(self.results))]
 
     def update(self, message):
         self.sequence += 1
         self.state = dict(message_to_ordereddict(message), ui_sequence=self.sequence, ui_instance=self.instance)
         self.received = time.monotonic()
+
+    def publish_input(self, operation, channel, value):
+        publisher, message_type, channel_field, value_field = self.inputs[operation]
+        if operation == 'digital':
+            value = bool(value)
+        elif operation == 'analog':
+            value = int(value)
+        publisher.publish(message_type(**{channel_field: channel, value_field: value}))
 
     def snapshot(self):
         state = self.state.copy()
@@ -94,23 +116,37 @@ def create_app(ros, recordings: Path, static: Path, project=None):
 
     @app.post('/api/command')
     async def command(body: Request):
-        if body.axis >= (4 if body.operation == 'digital' else 2):
+        if body.axis >= (4 if body.operation == 'digital' else 2 if body.operation == 'analog' else 6):
             raise HTTPException(422, 'Invalid axis or I/O channel')
         if not math.isfinite(body.value):
             raise HTTPException(422, 'Value must be finite')
         if len(body.parameters) > 16 or any(not math.isfinite(v) for v in body.parameters.values()):
             raise HTTPException(422, 'Controller parameters must be finite; at most 16 are supported')
-        if not ros.snapshot().get('bridge_alive') or not ros.client.service_is_ready():
+        if not ros.snapshot().get('bridge_alive'):
             raise HTTPException(503, 'Control bridge is unavailable')
+        if body.operation in ('target', 'pwm', 'digital', 'analog'):
+            # Transport/type checks only. The C++ gate owns mode/range checks.
+            if body.operation in ('digital', 'analog') and (body.value != int(body.value) or
+                    not 0 <= body.value <= (1 if body.operation == 'digital' else 4095)):
+                raise HTTPException(422, 'Invalid output code')
+            ros.publish_input(body.operation, body.axis, body.value)
+            return {'published': True, 'state': ros.snapshot()}
+        client = ros.dsp_client if body.operation in ('dsp_clear', 'dsp_disarm') else ros.client
+        if not client.service_is_ready():
+            raise HTTPException(503, 'Command service is unavailable')
         async with command_lock:
-            request = Command.Request()
-            request.operation, request.axis = body.operation, body.axis
-            request.value, request.enabled = body.value, body.enabled
-            request.controller_type, request.profile = body.controller_type, body.profile
-            request.parameter_names = list(body.parameters)
-            request.parameter_values = list(body.parameters.values())
-            request.controller_revision = body.controller_revision
-            future = ros.client.call_async(request)
+            if body.operation in ('dsp_clear', 'dsp_disarm'):
+                request = DspCommand.Request()
+                request.operation = DspCommand.Request.CLEAR_FAULT if body.operation == 'dsp_clear' else DspCommand.Request.DISARM
+            else:
+                request = Command.Request()
+                request.operation, request.axis = body.operation, body.axis
+                request.value, request.enabled = body.value, body.enabled
+                request.controller_type, request.profile = body.controller_type, body.profile
+                request.parameter_names = list(body.parameters)
+                request.parameter_values = list(body.parameters.values())
+                request.controller_revision = body.controller_revision
+            future = client.call_async(request)
             deadline = time.monotonic() + 3
             while not future.done():
                 if time.monotonic() > deadline:
@@ -119,12 +155,13 @@ def create_app(ros, recordings: Path, static: Path, project=None):
             result = future.result()
             if not result.accepted:
                 raise HTTPException(409, result.message)
-            while ros.state.get('last_command_id', 0) < result.command_id:
+            while result.command_id not in ros.results or ros.state.get('last_command_id', 0) < result.command_id:
                 if time.monotonic() > deadline:
                     raise HTTPException(504, 'Command acknowledgment timed out')
                 await asyncio.sleep(0.005)
-            if ros.state.get('last_command_id') == result.command_id and ros.state.get('command_error'):
-                raise HTTPException(409, ros.state['command_error'])
+            applied = ros.results.pop(result.command_id)
+            if not applied.applied:
+                raise HTTPException(409, applied.message)
             return {'command_id': result.command_id, 'state': ros.snapshot()}
 
     @app.websocket('/ws')

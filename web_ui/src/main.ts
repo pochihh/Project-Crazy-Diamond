@@ -7,23 +7,20 @@ import { defaults, readSettings, type Settings } from './settings';
 type State = ControllerState & {
     protocol_version: number;
     control_rate_hz: number;
-    dsp_state: number;
-    dsp_arm_mask: number;
-    dsp_fault: number;
-    dsp_sequence: number;
-    dsp_command_sequence: number;
-    encoder_valid: number;
-    encoder_counts: number[];
-    digital_in: number;
-    digital_out: number;
-    analog_valid: number;
-    analog_out_valid: number;
-    analog_in: number[];
-    analog_out: number[];
-    dsp_invalid_frames: number;
-    dsp_rejected_commands: number;
-    dsp_watchdogs: number;
-    cpu2_max_poll_us: number;
+    dsp: {
+        timestamp_us: number; sequence: number; session: number; command_sequence: number;
+        state: number; arm_mask: number; fault: number; encoder_valid: number;
+        position: number[]; reference: number[]; requested_duty: number[]; duty: number[];
+        digital_in: number; digital_out: number; analog_valid: number; analog_out_valid: number;
+        analog_in: number[]; analog_out: number[];
+        invalid_frames: number; rejected_commands: number; command_timeout_count: number;
+        encoder_errors: number; cpu2_max_poll_us: number;
+    };
+    feedback_age_ms: number;
+    input_rejections: number;
+    input_error: string;
+    input_topic: string;
+    input_channel: number;
     bridge_alive: boolean;
     connected: boolean;
     mock: boolean;
@@ -95,6 +92,7 @@ let socket: WebSocket | undefined, socketConnected = false, reconnectTimer: Retu
 let activeTab = 'control', dirtyState = false, lastSample = -1, wasRecording = false;
 let clockOffset = Infinity, latestFrameTime = 0, latestReceipt = 0, latestFresh = 0, lastResourceUpdate = 0;
 let snapshotPending = false, lastSnapshotRequest = 0, lastPlotPaint = 0, lastSystemUpdate = 0, systemPending = false;
+let lastInputRejections = 0;
 let messageTimeout: ReturnType<typeof setTimeout>;
 const retiredStreams = new Set<string>();
 const plots = [0, 1].map(a => new PositionPlot($<HTMLCanvasElement>(`plot-${a}`)));
@@ -171,6 +169,8 @@ for (const event of ['pointerup', 'pointercancel', 'blur'])
     window.addEventListener(event, () => activeInputs.clear());
 $<HTMLInputElement>('system-enable').onchange = e => void act('system', 0, 0, (e.target as HTMLInputElement).checked);
 $('stop').onclick = () => { pendingTargets.clear(); activeInputs.clear(); void act('stop'); };
+$('dsp-disarm').onclick = () => { pendingTargets.clear(); void act('dsp_disarm'); };
+$('dsp-clear').onclick = () => void act('dsp_clear');
 $('record-start').onclick = () => void act('record_start');
 $('record-stop').onclick = () => void act('record_stop');
 function closeTopics() { const sockets = [...topicSockets.values()]; topicSockets.clear(); sockets.forEach(ws => ws.close()); }
@@ -256,11 +256,26 @@ function render(s: State) {
 
     }
     controllers.render(s,live);
-    text('axis-note', s.control_mode?.includes(1) ? 'PWM holds the last duty until set to zero or disabled.' : 'Targets hold on release and through browser disconnect.');
+    text('axis-note', s.control_mode?.slice(0,2).includes(1) ? 'PWM holds the last duty until set to zero or disabled.' : 'Targets hold on release and through browser disconnect.');
     text('dsp-rate', `${(s.control_rate_hz ?? 0).toLocaleString()} Hz`);
     text('dsp-link', live ? 'SPI / 10 MHz' : 'OFFLINE');
-    text('dsp-frames', (s.sample_count ?? 0).toLocaleString());
-    text('dsp-status', live ? 'CONNECTED' : 'OFFLINE');
+    text('dsp-frames', s.dsp.sequence.toLocaleString());
+    const dspState=s.dsp.session===0?'UNSYNCHRONIZED':(['DISARMED','ACTIVE','FAULT'][s.dsp.state]??`UNKNOWN (${s.dsp.state})`);
+    text('dsp-status', dspState);
+    text('dsp-freshness', live ? `Live DSP feedback · ${s.feedback_age_ms.toFixed(1)} ms old` : 'DSP feedback unavailable · values below are cached');
+    text('dsp-session', s.dsp.session.toString());
+    text('dsp-ack', s.dsp.command_sequence.toString());
+    text('dsp-arm', `0x${s.dsp.arm_mask.toString(16)}`);
+    const faults=[[1,'Command timeout'],[2,'Invalid command'],[4,'Encoder unavailable']].filter(([bit])=>s.dsp.fault&Number(bit)).map(([,name])=>name);
+    text('dsp-fault', `0x${s.dsp.fault.toString(16)}${faults.length?' / '+faults.join(', '):' / None'}`);
+    text('dsp-invalid', s.dsp.invalid_frames);
+    text('dsp-rejected', s.dsp.rejected_commands);
+    text('dsp-timeouts', s.dsp.command_timeout_count);
+    text('dsp-encoder-errors', s.dsp.encoder_errors);
+    text('dsp-encoder-valid', `0x${s.dsp.encoder_valid.toString(16)}`);
+    text('dsp-poll', `${s.dsp.cpu2_max_poll_us} µs`);
+    $<HTMLButtonElement>('dsp-disarm').disabled=!s.bridge_alive;
+    $<HTMLButtonElement>('dsp-clear').disabled=!live || s.system_enabled || s.dsp.arm_mask!==0;
     $('dsp-status').classList.toggle('on', live);
     text('record-status', s.recording ? '● RECORDING' : 'IDLE');
     $('record-status').classList.toggle('recording', s.recording);
@@ -286,22 +301,25 @@ function renderResources(s: State, live: boolean) {
     }
     const transport = $('transport-rows');
     transport.replaceChildren();
-    for (const cells of [['Device', 'TMS320F28379D / CPU1 + CPU2'], ['Interface', 'SPI mode 1 · 10 MHz · 192 bytes/frame'], ['Protocol', `v${s.protocol_version} · acknowledged command ${s.dsp_command_sequence}`], ['Host loop', `${s.control_rate_hz.toLocaleString()} Hz · dedicated RT thread`], ['Frame timestamp', `${(s.timestamp_us / 1e6).toFixed(3)} s / DSP uptime`], ['Communication health', `${s.telemetry_errors} telemetry errors · ${s.dropped_samples} dropped samples`], ['DSP-confirmed state', `Armed mask 0x${s.dsp_arm_mask.toString(16)} · fault 0x${s.dsp_fault.toString(16)}`], ['Encoder validity', `Channels 0–5 mask: 0x${s.encoder_valid.toString(16)} · CPU2 max polling gap ${s.cpu2_max_poll_us} µs`], ['Encoder counts (0–5)', s.encoder_counts?.map((n,i)=>((s.encoder_valid>>i)&1)?String(n):'Unavailable').join(' / ') ?? '—'], ['DSP diagnostics', `${s.dsp_invalid_frames} invalid frames · ${s.dsp_rejected_commands} rejected commands · ${s.dsp_watchdogs} watchdogs`]])
+    for (const cells of [['Device', 'TMS320F28379D / CPU1 + CPU2'], ['Interface', 'SPI mode 1 · 10 MHz · 192 bytes/frame'], ['Protocol', `v${s.protocol_version} · acknowledged command ${s.dsp.command_sequence}`], ['Host loop', `${s.control_rate_hz.toLocaleString()} Hz · dedicated RT thread`], ['DSP timestamp', `${s.dsp.timestamp_us} µs / raw 32-bit counter`], ['Recording timestamp', `${s.timestamp_us} µs / host-unwrapped DSP counter`], ['Communication health', `${s.telemetry_errors} telemetry errors · ${s.dropped_samples} dropped samples`], ['DSP-confirmed state', `Armed mask 0x${s.dsp.arm_mask.toString(16)} · fault 0x${s.dsp.fault.toString(16)}`], ['Encoder validity', `Channels 0–5 mask: 0x${s.dsp.encoder_valid.toString(16)} · CPU2 max polling gap ${s.dsp.cpu2_max_poll_us} µs`], ['Encoder counts (0–5)', s.dsp.position?.map((n,i)=>((s.dsp.encoder_valid>>i)&1)?String(n):'Unavailable').join(' / ') ?? '—'], ['DSP diagnostics', `${s.dsp.invalid_frames} invalid frames · ${s.dsp.rejected_commands} rejected commands · ${s.dsp.command_timeout_count} command timeouts`]])
         row(transport, cells);
     const outputsEnabled=live && s.system_enabled && !s.fault;
     for(let i=0;i<4;i++) {
-        text(`di-${i}`,live?((s.digital_in>>i)&1):'—');text(`do-${i}`,live?((s.digital_out>>i)&1):'—');
-        const input=$<HTMLInputElement>(`do-set-${i}`);input.disabled=!outputsEnabled;input.checked=!!((s.digital_out>>i)&1);
+        text(`di-${i}`,live?((s.dsp.digital_in>>i)&1):'—');text(`do-${i}`,live?((s.dsp.digital_out>>i)&1):'—');
+        const input=$<HTMLInputElement>(`do-set-${i}`);input.disabled=!outputsEnabled;input.checked=!!((s.dsp.digital_out>>i)&1);
     }
-    for(let i=0;i<6;i++) text(`ai-${i}`,live&&((s.analog_valid>>i)&1)?s.analog_in[i]:'Unavailable');
+    for(let i=0;i<6;i++) text(`ai-${i}`,live&&((s.dsp.analog_valid>>i)&1)?s.dsp.analog_in[i]:'Unavailable');
     for(let i=0;i<2;i++) {
-        text(`ao-${i}`,live&&((s.analog_out_valid>>i)&1)?s.analog_out[i]:'—');
+        text(`ao-${i}`,live&&((s.dsp.analog_out_valid>>i)&1)?s.dsp.analog_out[i]:'—');
         const input=$<HTMLInputElement>(`ao-set-${i}`);input.disabled=!outputsEnabled;
         $<HTMLButtonElement>(`ao-apply-${i}`).disabled=!outputsEnabled;
-        if(document.activeElement!==input && !dirtyAnalog.has(i))inputValue(`ao-set-${i}`,String(s.analog_out[i]??0));
+        if(document.activeElement!==input && !dirtyAnalog.has(i))inputValue(`ao-set-${i}`,String(s.dsp.analog_out[i]??0));
     }
 }
 function receive(s: State) {
+    if (s.input_rejections > lastInputRejections)
+        message(`${s.input_topic} channel ${s.input_channel}: ${s.input_error}`, true);
+    lastInputRejections = s.input_rejections;
     const now = performance.now(), time = s.timestamp_us / 1000;
     if (s.ui_instance && retiredStreams.has(s.ui_instance))
         return;
@@ -475,7 +493,7 @@ async function updateSystem() {
             return `<section class="panel core-card ${pinned ? 'rt-core' : ''}"><header><h3>CPU ${i}</h3><div>${isolated ? '<span class="badge on">ISOLATED</span>' : ''}${pinned ? '<span class="badge on" title="Physical control worker affinity: CPU 3">RT PINNED</span>' : ''}</div></header>${meter(`core-${i}`, 'Usage')}</section>`;
         }).join('');
         cores.forEach((value, i) => setMeter(`core-${i}`, value));
-        $('nodes').innerHTML = info.nodes.map((name: string) => { const bridge = name === 'bridge', web = name === 'ui_bridge'; return `<article class="panel node-card"><header><h3>/${escape(name)}</h3><span class="badge ${bridge ? 'on' : ''}">${bridge ? 'RT + NON-RT' : web ? 'NON-RT' : 'UNCLASSIFIED'}</span></header><p>${bridge ? 'CPU 3 · FIFO 80 worker; ROS / recorder on CPUs 0–2' : web ? 'HTTP, WebSocket and ROS adapter · CPUs 0–2' : 'Project node · execution timing not instrumented'}</p><div class="node-facts"><span>${bridge ? 'CONTROL RATE' : 'ROLE'}<strong>${bridge ? '1,000 Hz' : web ? 'Web bridge' : 'ROS node'}</strong></span><span>LATE CYCLES<strong>${bridge ? state?.deadline_misses ?? '—' : '—'}</strong></span><span>${bridge ? 'MAX WORK' : 'EXECUTION'}<strong>${bridge ? `${state?.max_cycle_us.toFixed(1) ?? '—'} µs` : web ? 'Async / ROS' : 'Unknown'}</strong></span></div></article>`; }).join('');
+        $('nodes').innerHTML = info.nodes.map((name: string) => { const bridge = name === 'bridge', web = name === 'ui_bridge'; return `<article class="panel node-card"><header><h3>/${escape(name)}</h3><span class="badge ${bridge ? 'on' : ''}">${bridge ? 'RT + NON-RT' : web ? 'NON-RT' : 'UNCLASSIFIED'}</span></header><p>${bridge ? 'CPU 3 · FIFO 80 worker; ROS / recorder on CPUs 0–2' : web ? 'HTTP, WebSocket and ROS adapter · CPUs 0–2' : 'Project node · execution timing not instrumented'}</p><div class="node-facts"><span>${bridge ? 'CONTROL RATE' : 'ROLE'}<strong>${bridge ? `${state?.control_rate_hz?.toLocaleString() ?? '—'} Hz` : web ? 'Web bridge' : 'ROS node'}</strong></span><span>LATE CYCLES<strong>${bridge ? state?.deadline_misses ?? '—' : '—'}</strong></span><span>${bridge ? 'MAX WORK' : 'EXECUTION'}<strong>${bridge ? `${state?.max_cycle_us.toFixed(1) ?? '—'} µs` : web ? 'Async / ROS' : 'Unknown'}</strong></span></div></article>`; }).join('');
         renderTopics(info.topics);
     }
     catch {

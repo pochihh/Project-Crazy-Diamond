@@ -36,7 +36,7 @@ def test_offline_commands_and_input_bounds(tmp_path):
     assert client.post('/api/command', content='{"operation":"controller_apply","parameters":{"kp":1e999}}',
                        headers={'Content-Type':'application/json'}).status_code == 422
     assert client.post('/api/command', json={'operation': 'system', 'enabled': True}).status_code == 503
-    assert client.post('/api/command', json={'operation': 'zero', 'axis': 2}).status_code == 422
+    assert client.post('/api/command', json={'operation': 'zero', 'axis': 6}).status_code == 422
     assert client.post('/api/command', json={'operation': 'digital', 'axis': 3}).status_code == 503
     assert client.post('/api/command', json={'operation': 'digital', 'axis': 4}).status_code == 422
     assert client.post('/api/command', json={'operation': 'analog', 'axis': 2}).status_code == 422
@@ -118,3 +118,39 @@ def test_invalid_stream_rate_and_project_selection(tmp_path, monkeypatch):
     (project / 'project.json').write_text('{"id":"other","axes":[]}')
     with pytest.raises(ValueError):
         load_project(tmp_path)
+
+
+def test_continuous_inputs_publish_without_waiting_for_service_or_state_ack(tmp_path):
+    class OnlineRos(FakeRos):
+        def __init__(self):
+            self.sent = []
+        def snapshot(self):
+            return {'bridge_alive': True, 'connected': True}
+        def publish_input(self, operation, channel, value):
+            self.sent.append((operation, channel, value))
+    ros = OnlineRos()
+    client = TestClient(create_app(ros, tmp_path, tmp_path / 'missing-ui'))
+    assert client.post('/api/command', json={'operation':'pwm','axis':5,'value':.2}).json()['published']
+    assert client.post('/api/command', json={'operation':'target','axis':0,'value':7}).json()['published']
+    assert ros.sent == [('pwm',5,.2),('target',0,7)]
+    assert client.post('/api/command', json={'operation':'analog','axis':1,'value':1.5}).status_code == 422
+    assert client.post('/api/command', json={'operation':'digital','axis':0,'value':2}).status_code == 422
+    assert client.post('/api/command', json={'operation':'system','enabled':True}).status_code == 503
+
+
+def test_dsp_fields_are_relayed_and_result_errors_are_kept_per_command():
+    from interfaces.msg import CommandResult
+    ros = SimpleNamespace(sequence=0, instance='ui-process', state={}, received=0, results={})
+    message = BridgeState()
+    message.dsp.session = 123
+    message.dsp.state = 2
+    message.dsp.command_timeout_count = 7
+    message.dsp.duty = [.1,.2,.3,.4,.5,.6]
+    RosClient.update(ros, message)
+    assert ros.state['dsp']['session'] == 123
+    assert ros.state['dsp']['state'] == 2
+    assert ros.state['dsp']['command_timeout_count'] == 7
+    assert len(ros.state['dsp']['duty']) == 6
+    RosClient.result(ros, CommandResult(command_id=1,applied=False,message='Disable axis'))
+    RosClient.result(ros, CommandResult(command_id=2,applied=True))
+    assert not ros.results[1].applied and ros.results[2].applied

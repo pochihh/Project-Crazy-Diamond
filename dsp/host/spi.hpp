@@ -45,6 +45,38 @@ inline Telemetry parse_telemetry(const Words& words){
     }
     throw InvalidTelemetryFrame();
 }
+// Host-only session tracking. Inspect session identity BEFORE comparing counters:
+// a DSP reboot starts session/timestamps at zero. No DSP boot-ID field is needed.
+class SpiSession {
+public:
+    uint32_t id=0,sequence=0;
+    bool ready=false,rebooted=false,changed=false;
+    SpiSession(){resynchronize();}
+    void resynchronize() {
+        auto next=static_cast<uint32_t>(Clock::now().time_since_epoch().count())|1U;
+        if(next==id)next+=2;
+        id=next;sequence=0;ready=false;have_timestamp_=false;last_ack_=0;ack_time_=Clock::now();
+    }
+    void accept(const Telemetry& t,Clock::time_point now=Clock::now()) {
+        rebooted=false;changed=false;
+        if(t.session!=id) {
+            if(have_connected_ && t.session==0 && !boot_seen_) {rebooted=true;boot_seen_=true;}
+            if(ready) {changed=true;resynchronize();}
+            return;
+        }
+        if(have_timestamp_ && (static_cast<int32_t>(t.timestamp_us-last_timestamp_)<=0 ||
+                              static_cast<int32_t>(t.sequence-last_frame_)<=0))
+            throw std::runtime_error("Stale DSP telemetry");
+        last_timestamp_=t.timestamp_us;last_frame_=t.sequence;have_timestamp_=true;
+        if(!ready || t.command_sequence!=last_ack_) {last_ack_=t.command_sequence;ack_time_=now;}
+        if(now-ack_time_>std::chrono::milliseconds(20))throw std::runtime_error("DSP stopped acknowledging commands");
+        ready=true;have_connected_=true;boot_seen_=false;
+    }
+private:
+    bool have_timestamp_=false,have_connected_=false,boot_seen_=false;
+    uint32_t last_timestamp_=0,last_frame_=0,last_ack_=0;
+    Clock::time_point ack_time_{};
+};
 #ifdef __linux__
 class SpiLink {
 public:
@@ -82,31 +114,25 @@ public:
     SpiLink(const SpiLink&) = delete;
     SpiLink& operator=(const SpiLink&) = delete;
     const SpiTransferInfo& diagnostics() const {return last_transfer_;}
+    const SpiSession& session() const {return session_;}
+    void resynchronize(){session_.resynchronize();}
 
     Telemetry exchange(uint16_t operation,const Values& values={},uint16_t mask=0,
                        const std::array<int32_t,6>& reference={},uint16_t digital_out=0,
                        const std::array<uint16_t,2>& analog_out={}) {
-        PcdCommand c{};c.operation=synchronized_?operation:PCD_SYNC;
-        c.session=session_;c.sequence=++sequence_;c.arm_mask=mask;c.digital_out=digital_out;
+        PcdCommand c{};c.operation=session_.ready?operation:PCD_SYNC;
+        c.session=session_.id;c.sequence=++session_.sequence;c.arm_mask=mask;c.digital_out=digital_out;
         std::copy(values.begin(),values.end(),c.duty);
         std::copy(reference.begin(),reference.end(),c.reference);
         std::copy(analog_out.begin(),analog_out.end(),c.analog_out);
         const auto telemetry=parse_telemetry(transfer(make_command(c)));
-        if(have_timestamp_ && (static_cast<int32_t>(telemetry.timestamp_us-last_timestamp_)<=0 ||
-                              static_cast<int32_t>(telemetry.sequence-last_frame_)<=0))
-            throw std::runtime_error("Stale DSP telemetry");
-        last_timestamp_=telemetry.timestamp_us;last_frame_=telemetry.sequence;have_timestamp_=true;
-        if(telemetry.session==session_){
-            synchronized_=true;
-            if(telemetry.command_sequence!=last_ack_){last_ack_=telemetry.command_sequence;ack_time_=Clock::now();}
-            if(Clock::now()-ack_time_>std::chrono::milliseconds(20))throw std::runtime_error("DSP stopped acknowledging commands");
-        } else if(synchronized_) throw std::runtime_error("DSP session changed; restart bridge disarmed");
+        session_.accept(telemetry);
         return telemetry;
     }
     void disarm() noexcept {
         if(fd_<0)return;
         for(int n=0;n<5;n++){
-            PcdCommand c{};c.operation=PCD_DISARM;c.session=session_;c.sequence=++sequence_;
+            PcdCommand c{};c.operation=PCD_DISARM;c.session=session_.id;c.sequence=++session_.sequence;
             try{transfer(make_command(c));}catch(...){}
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
@@ -128,12 +154,7 @@ private:
         return rx;
     }
     int fd_ = -1;
-    uint32_t session_=static_cast<uint32_t>(Clock::now().time_since_epoch().count())|1U;
-    uint32_t sequence_=0,last_ack_=0,last_frame_=0;
-    bool synchronized_=false;
-    Clock::time_point ack_time_=Clock::now();
-    std::uint32_t last_timestamp_ = 0;
-    bool have_timestamp_ = false;
+    SpiSession session_;
     SpiTransferInfo last_transfer_{};
 };
 

@@ -27,14 +27,14 @@ def command(operation, axis=0, value=0, enabled=False):
 
 initial = get('/api/state')
 assert initial['bridge_alive'] and initial['connected'] and not initial['recording']
-assert not initial['system_enabled'] and initial['dsp_arm_mask'] == 0
+assert not initial['system_enabled'] and initial['dsp']['arm_mask'] == 0
 
 
 def wait(predicate):
     for _ in range(100):
         state = get('/api/state')
         assert state['bridge_alive'] and state['connected'] and not state['fault']
-        assert state['dsp_arm_mask'] == 0 and not any(state['axis_enabled'])
+        assert state['dsp']['arm_mask'] == 0 and not any(state['axis_enabled'])
         for key in ('telemetry_errors', 'deadline_misses', 'dropped_samples'):
             if key == 'deadline_misses' and initial['mock']:
                 continue  # Mock runs under ordinary scheduling, not SCHED_FIFO.
@@ -47,22 +47,19 @@ def wait(predicate):
 
 recording = False
 try:
-    try:
-        command('digital', 3, 1)
-        raise AssertionError('Output accepted with system disabled')
-    except HTTPError as error:
-        assert error.code == 409
+    assert command('digital', 3, 1)['published']
+    wait(lambda s: s['input_rejections'] > initial['input_rejections'] and s['dsp']['digital_out'] == 0)
     command('system', enabled=True)
-    wait(lambda s: s['dsp_state'] == 1)
+    wait(lambda s: s['dsp']['state'] == 1)
     command('record_start'); recording = True
     for bit in range(4):
         command('digital', bit, 1)
-        wait(lambda s: s['digital_out'] == (1 << (bit + 1)) - 1)
+        wait(lambda s: s['dsp']['digital_out'] == (1 << (bit + 1)) - 1)
     command('analog', 0, 1024); command('analog', 1, 3072)
-    wait(lambda s: s['analog_out'] == [1024, 3072] and s['analog_valid'] == 63)
+    wait(lambda s: s['dsp']['analog_out'] == [1024, 3072] and s['dsp']['analog_valid'] == 63)
     time.sleep(.2)
     command('stop')
-    wait(lambda s: not s['system_enabled'] and s['digital_out'] == 0 and s['analog_out'] == [0, 0])
+    wait(lambda s: not s['system_enabled'] and s['dsp']['digital_out'] == 0 and s['dsp']['analog_out'] == [0, 0])
     command('record_stop'); recording = False
     final = wait(lambda s: not s['recording'])
     with urlopen(args.url + '/api/recordings/' + final['recording_file']) as response:

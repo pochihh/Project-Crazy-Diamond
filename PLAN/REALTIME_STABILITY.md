@@ -154,3 +154,13 @@ not an error count, and normally returns to about 2 µs after reboot.
 Automatic epoch/session recovery and clearer labeling of cached DSP data remain
 unimplemented. This reset event does not establish the cause of the earlier
 spontaneous telemetry fault. Evidence: `.local/reset-investigation/`.
+
+## Host reconnection update
+
+The ROS cleanup adds session-first resynchronization in the Pi transport, with
+no DSP firmware/protocol change. A zero DSP session causes a fresh handshake;
+new counter baselines are accepted only for the synchronized session. Outputs
+remain disarmed and a restarted DSP causes a new startup zero and CSV boundary.
+The earlier manual restart workaround documents the original failure. See
+[the current ROS guide](../ros2_ws/README.md) for API and logging behavior; hardware
+acceptance evidence for this cleanup is maintained separately.

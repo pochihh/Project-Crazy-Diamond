@@ -283,3 +283,5 @@ footer{flex-direction:column}
 .controller-parameters label{display:flex;flex-direction:column;gap:8px;font-size:11px;margin:16px 0}
 .controller-actions{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
 #controller-panel hr{border:0;border-top:1px solid var(--line);margin:24px 0}
+
+.dsp-detail{margin-top:8px;padding:14px 20px}.dsp-indicators{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:16px;margin:14px 0 18px}.dsp-indicators>div{display:flex;flex-direction:column;gap:6px}.dsp-indicators span{font-size:11px;color:var(--muted)}.dsp-indicators strong{font:13px monospace;overflow-wrap:anywhere}.dsp-detail .fine{line-height:1.6}
