@@ -5,7 +5,6 @@ bool mock
 bool system_enabled
 bool[6] axis_enabled
 string project_id
-string position_controller
 ControllerProfile[6] controllers
 uint64[6] controller_revision
 float64 reference_speed_mm_s
@@ -17,13 +16,7 @@ float64[6] maximum_mm
 float64[6] position_mm
 float64[6] target_mm
 float64[6] reference_mm
-int32[6] raw_counts
 int32[6] zero_counts
-float32[6] requested_duty
-float32[6] output_duty
-float64[6] kp
-float64[6] ki
-float64[6] kd
 float64[6] duty_limit
 string fault
 uint64 deadline_misses

@@ -303,7 +303,7 @@ private:
     void publish() {
         const auto& s=latest_;
         interfaces::msg::BridgeState msg;
-        msg.project_id=DIAMOND_PROJECT_ID;msg.position_controller="PID";
+        msg.project_id=DIAMOND_PROJECT_ID;
         msg.reference_speed_mm_s=core_.speed_mm_s;
         msg.controller_revision=s.controller_revision;
         msg.control_mode=s.mode;msg.pwm_target=s.pwm;msg.counts_per_mm=s.scale;
@@ -313,9 +313,7 @@ private:
         msg.zero_counts=s.zero;
         for(unsigned a=0;a<kAxes;a++) {
             msg.controllers[a]=profile_message(s.profiles[a],s.controllers[a]);
-            msg.raw_counts[a]=s.telemetry.position[a];msg.requested_duty[a]=s.telemetry.requested_duty[a];
-            msg.output_duty[a]=s.telemetry.duty[a];msg.axis_enabled[a]=s.selected[a];
-            msg.kp[a]=s.tuning[a].kp;msg.ki[a]=s.tuning[a].ki;msg.kd[a]=s.tuning[a].kd;msg.duty_limit[a]=s.tuning[a].limit;
+            msg.axis_enabled[a]=s.selected[a];msg.duty_limit[a]=s.tuning[a].limit;
         }
         msg.fault=error_text(s.fault);msg.command_error=error_text(s.command_error);msg.last_command_id=s.command_id;
         msg.deadline_misses=s.deadlines;msg.telemetry_errors=s.errors;msg.dropped_samples=s.dropped;

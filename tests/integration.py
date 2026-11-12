@@ -87,7 +87,7 @@ def main():
         held = wait(lambda s: abs(s['position_mm'][0]-1)<0.3 and abs(s['position_mm'][1]+1)<0.3)
         assert held['system_enabled'] and all(held['axis_enabled'][:2]) and held['recording']
         command('axis', 0, enabled=False)
-        wait(lambda s: abs(s['output_duty'][0])<0.001 and s['axis_enabled'][1])
+        wait(lambda s: abs(s['dsp']['duty'][0])<0.001 and s['axis_enabled'][1])
         command('zero', 0)
         wait(lambda s: abs(s['position_mm'][0])<0.02 and s['target_mm'][0]==0)
         command('stop')
@@ -98,7 +98,7 @@ def main():
                 command('pwm', a, 0.03)  # Enabling must clear preloaded output.
                 command('axis', a, enabled=True)
                 command('system', enabled=True)
-                wait(lambda s: s['pwm_target'][a] == 0 and abs(s['output_duty'][a]) < 0.001)
+                wait(lambda s: s['pwm_target'][a] == 0 and abs(s['dsp']['duty'][a]) < 0.001)
                 try:
                     command('mode', a, 0)
                     raise AssertionError('Mode changed while enabled')
@@ -106,10 +106,10 @@ def main():
                     assert e.code == 409
                 for duty in (0.03, -0.03):
                     command('pwm', a, duty)
-                    sample = wait(lambda s: abs(s['output_duty'][a] - duty) < 0.001, 2)
+                    sample = wait(lambda s: abs(s['dsp']['duty'][a] - duty) < 0.001, 2)
                     time.sleep(0.15)
                     command('pwm', a, 0)
-                    wait(lambda s: abs(s['output_duty'][a]) < 0.001)
+                    wait(lambda s: abs(s['dsp']['duty'][a]) < 0.001)
                     pwm_checks.append({'axis': a, 'duty': duty, 'position_mm': sample['position_mm'][a]})
                 command('stop')
                 command('mode', a, 0)

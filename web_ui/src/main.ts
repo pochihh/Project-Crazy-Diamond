@@ -27,7 +27,6 @@ type State = ControllerState & {
     system_enabled: boolean;
     axis_enabled: boolean[];
     project_id: string;
-    position_controller: string;
     control_mode: number[];
     pwm_target: number[];
     counts_per_mm: number[];
@@ -36,13 +35,7 @@ type State = ControllerState & {
     position_mm: number[];
     target_mm: number[];
     reference_mm: number[];
-    raw_counts: number[];
     zero_counts: number[];
-    requested_duty: number[];
-    output_duty: number[];
-    kp: number[];
-    ki: number[];
-    kd: number[];
     duty_limit: number[];
     fault: string;
     sample_count: number;
@@ -236,7 +229,7 @@ function render(s: State) {
             text(`ruler-${a}-${i}`, `${i === 4 && value > 0 ? '+' : ''}${value}${i === 4 ? (pwm ? ' %' : ' mm') : ''}`);
         }
         const marker = $(`marker-${a}`);
-        const actual = pwm ? 100 * (s.output_duty?.[a] ?? 0) : pos;
+        const actual = pwm ? 100 * (s.dsp.duty?.[a] ?? 0) : pos;
         marker.hidden = !live;
         marker.title = pwm ? 'Reported output duty' : 'Measured position';
         marker.style.left = `${Math.max(0, Math.min(100, (actual - minimum) / (maximum - minimum) * 100))}%`;
@@ -245,7 +238,7 @@ function render(s: State) {
             if (document.activeElement !== $(`target-${a}`) && !dirtyTargets.has(a))
                 inputValue(`target-${a}`, t.toFixed(1));
         }
-        const duty = 100 * (s.output_duty?.[a] ?? 0);
+        const duty = 100 * (s.dsp.duty?.[a] ?? 0);
         setMeter(`duty-meter-${a}`, live ? Math.abs(duty) : null, live ? `${duty.toFixed(1)}%` : '—');
         text(`error-label-${a}`, pwm ? 'Duty target' : 'Position error');
         text(`error-${a}`, live ? (pwm ? `${t.toFixed(1)}%` : `${(t - pos).toFixed(2)} mm`) : '—');
@@ -296,7 +289,7 @@ function renderResources(s: State, live: boolean) {
     rows.replaceChildren();
     for (let a = 0; a < 2; a++) {
         const meta = project.axes[a], tr = document.createElement('tr'), enabled = s.system_enabled && s.axis_enabled[a] && !s.fault;
-        tr.innerHTML = `<td>${escape(meta.name)}<small>DSP 00 / channel ${a}</small></td><td>${escape(meta.motor ?? `DC motor ${a}`)}<small>${escape(meta.encoder ?? `eQEP${a + 1}`)}</small></td><td>${(s.counts_per_mm?.[a] ?? 321.8467).toFixed(3)} counts/mm<small>${s.minimum_mm?.[a] ?? -50} … ${s.maximum_mm?.[a] ?? 50} mm</small></td><td>${live ? s.position_mm[a].toFixed(3) : '—'} mm<small>${live ? s.raw_counts[a] : '—'} counts</small></td><td>${live ? (s.output_duty[a] * 100).toFixed(1) : '—'}%<div class="meter"><i style="width:${Math.min(100, Math.abs(s.output_duty[a] * 100))}%"></i></div></td><td><span class="badge ${enabled ? 'on' : ''}">${enabled ? 'ENABLED' : 'DISABLED'}</span><small>${s.control_mode?.[a] === 1 ? 'PWM' : 'Position'}</small></td>`;
+        tr.innerHTML = `<td>${escape(meta.name)}<small>DSP 00 / channel ${a}</small></td><td>${escape(meta.motor ?? `DC motor ${a}`)}<small>${escape(meta.encoder ?? `eQEP${a + 1}`)}</small></td><td>${(s.counts_per_mm?.[a] ?? 321.8467).toFixed(3)} counts/mm<small>${s.minimum_mm?.[a] ?? -50} … ${s.maximum_mm?.[a] ?? 50} mm</small></td><td>${live ? s.position_mm[a].toFixed(3) : '—'} mm<small>${live ? s.dsp.position[a] : '—'} counts</small></td><td>${live ? (s.dsp.duty[a] * 100).toFixed(1) : '—'}%<div class="meter"><i style="width:${Math.min(100, Math.abs(s.dsp.duty[a] * 100))}%"></i></div></td><td><span class="badge ${enabled ? 'on' : ''}">${enabled ? 'ENABLED' : 'DISABLED'}</span><small>${s.control_mode?.[a] === 1 ? 'PWM' : 'Position'}</small></td>`;
         rows.append(tr);
     }
     const transport = $('transport-rows');
@@ -322,7 +315,7 @@ function receive(s: State) {
         return;
     if (s.ui_instance === state?.ui_instance && (s.ui_sequence ?? 0) < (state?.ui_sequence ?? 0))
         return;
-    if (s.input_rejections > lastInputRejections)
+    if (state && s.ui_instance === state.ui_instance && s.input_rejections > lastInputRejections)
         message(`${s.input_topic} channel ${s.input_channel}: ${s.input_error}`, true);
     lastInputRejections = s.input_rejections;
     const newStream = !!state?.ui_instance && s.ui_instance !== state.ui_instance;
