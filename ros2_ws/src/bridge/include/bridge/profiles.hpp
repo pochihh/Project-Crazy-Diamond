@@ -41,6 +41,8 @@ public:
         if(!params.IsMap())throw std::runtime_error("Profile parameters must be a mapping");
         std::vector<std::string> names;std::vector<double> values;
         for(const auto& item:params){names.push_back(item.first.as<std::string>());values.push_back(item.second.as<double>());}
+        // Old saved PID profiles retain their unfiltered behavior until explicitly tuned.
+        if(node["type"].as<std::string>()=="pid"&&!params["d_filter_hz"]){names.push_back("d_filter_hz");values.push_back(0);}
         auto c=parameters(node["type"].as<std::string>(),names,values);
         const auto reference=node["reference"];
         const auto kind=reference["type"].as<std::string>();

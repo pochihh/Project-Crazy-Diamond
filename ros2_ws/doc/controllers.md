@@ -18,6 +18,7 @@ parameters:
   kp: 0.001
   ki: 0.001
   kd: 0.0
+  d_filter_hz: 0.0
 reference:
   type: passthrough
   max_rate_mm_s: 20.0
@@ -30,17 +31,24 @@ The positive finite rate is stored even when bypassed so switching modes preserv
 its setting. Unknown reference modes/fields and old schema versions are rejected;
 all shipped profiles have been explicitly migrated to schema 2.
 
-- `bench_pid`: the existing gains plus explicit 20 mm/s slew limiting.
-- `research_pid`: the same gains with passthrough reference behavior.
+- `bench_pid`: the existing gains, 50 Hz D filtering and explicit 20 mm/s slew limiting.
+- `research_pid`: the same gains with passthrough reference and D filtering bypassed.
 - Gain units remain duty/count, duty/(count·s), and duty·s/count. There is no
   automatic gain-unit conversion when displaying millimeters.
 - PID differentiates error with a backward difference at 2 kHz:
   `e = (reference_mm - position_mm) * counts_per_mm`,
-  `D = kd * (e - previous_e) / 0.0005`,
+  `raw_d = (e - previous_e) / 0.0005`, `D = kd * filtered_d`,
   `duty = motor_sign * clamp(kp * e + I + D, -duty_limit, duty_limit)`.
-  D is zero on the first tick after reset. There is currently no derivative
-  filter: reference steps produce a derivative kick, and one encoder count in
-  one tick contributes `2000 * kd` duty (20% for `kd = 0.0001`).
+  D is zero on the first tick after reset. `d_filter_hz = 0` bypasses filtering;
+  otherwise a first-order low-pass uses `tau = 1 / (2*pi*d_filter_hz)` and
+  `filtered_d += dt/(tau + dt) * (raw_d - filtered_d)` (backward Euler).
+  Cutoff is tunable from 0 to 1000 Hz. Filter history is private to the axis,
+  retained across live cutoff updates, and cleared by controller reset.
+- Only D is filtered: P, I and reference processing are unchanged. D still
+  differentiates error, so target changes contribute a filtered derivative kick;
+  this does not switch to derivative-on-measurement. Lower cutoff smooths D more
+  and adds lag. Large P errors can still demand full duty. Without filtering,
+  one encoder count in one tick contributes `2000 * kd` duty (20% for Kd 0.0001).
 - Integral contribution is stored in duty units. After calculating the output,
   `ki * e * dt` is accumulated unless it would drive an already saturated output
   farther into saturation; integration that unwinds saturation remains allowed.
@@ -57,6 +65,10 @@ Profiles live in `projects/<project>/controllers/`. Each axis has private tuning
 and history. Save writes YAML atomically; other axes keep their copies until an
 explicit reload. Save as creates a new file. UI profile selection is session-only;
 startup assignments live in `bridge.yaml`.
+Older schema-2 PID YAML files that omit `d_filter_hz` load with zero/bypass, retaining
+their previous behavior; the next Save writes the field explicitly. Live API
+updates must supply all four PID parameters. The compiled descriptor drives the
+UI cutoff input and its range; Apply uses the same verified read-back as gains.
 
 Every controller/profile/gain/duty-limit command returns its actual configuration
 in `/bridge/command_result`, captured immediately after application by the RT
@@ -76,7 +88,7 @@ encoder-count references. The bridge has no tracking-error threshold: a large
 reference error remains an input to the controller and does not disable outputs.
 Future application-specific motion protection, such as detecting a stalled axis,
 belongs in a separate safety module; that module is not implemented yet.
-Logging can include input target, applied reference, PID gains,
+Logging can include input target, applied reference, PID gains and `d_filter_hz`,
 limiter mode/rate, requested duty and DSP-reported duty. Initial axis configuration
 is also included in CSV comments.
 

@@ -13,13 +13,13 @@ using ProfileId=std::array<char,64>;
 struct Parameter { const char *name,*unit; double initial,minimum,maximum; };
 struct ControllerType { const char *id,*label; unsigned count; std::array<Parameter,max_controller_parameters> parameters; };
 inline constexpr std::array<ControllerType,1> controller_types={{
-    {"pid","PID",3,{{{"kp","duty/count",0.0005,0,1e6},{"ki","duty/(count·s)",0.001,0,1e6},{"kd","duty·s/count",0,0,1e6}}}}
+    {"pid","PID",4,{{{"kp","duty/count",0.0005,0,1e6},{"ki","duty/(count·s)",0.001,0,1e6},{"kd","duty·s/count",0,0,1e6},{"d_filter_hz","Hz (0 = bypass)",0,0,1000}}}}
 }};
 struct ControllerConfig {
     uint8_t type=0;
     bool slew_enabled=false;
     double slew_rate_mm_s=20;
-    std::array<double,max_controller_parameters> parameters{0.0005,0.001,0};
+    std::array<double,max_controller_parameters> parameters{0.0005,0.001,0,0};
 };
 inline bool valid_controller(const ControllerConfig& c) {
     if(c.type>=controller_types.size() || !std::isfinite(c.slew_rate_mm_s) || c.slew_rate_mm_s<=0)return false;
@@ -49,7 +49,7 @@ public:
     ControllerConfig config{};
     double sign=-1,limit=1,reference_mm=0;
     void reset(){have_reference_=false;std::visit([](auto& p){p.reset();},implementation_);}
-    Tuning tuning() const {return {config.parameters[0],config.parameters[1],config.parameters[2],sign,limit};}
+    Tuning tuning() const {return {config.parameters[0],config.parameters[1],config.parameters[2],sign,limit,config.parameters[3]};}
     void configure(const ControllerConfig& next,bool running) {
         if(!valid_controller(next))throw std::runtime_error("Invalid controller configuration");
         if(next.type!=config.type) {implementation_.emplace<PidController>();running=false;}

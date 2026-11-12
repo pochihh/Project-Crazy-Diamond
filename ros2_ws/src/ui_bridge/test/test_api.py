@@ -228,8 +228,8 @@ def test_controller_apply_verifies_rt_readback_not_request_or_latest_state(tmp_p
         def __init__(self):
             self.state = {'last_command_id': 8, 'controllers': [{'type': 'later-setting'}]}
             self.results = {}
-            self.actual = ControllerProfile(id='working', type='pid', parameter_names=['kd','kp','ki'],
-                                            parameter_values=[.0001,.001,0.], slew_rate_mm_s=100.)
+            self.actual = ControllerProfile(id='working', type='pid', parameter_names=['kd','kp','ki','d_filter_hz'],
+                                            parameter_values=[.0001,.001,0.,50.], slew_rate_mm_s=100.)
             self.has_readback = True
             self.applied = True
             self.client = SimpleNamespace(service_is_ready=lambda:True, call_async=self.call)
@@ -244,18 +244,20 @@ def test_controller_apply_verifies_rt_readback_not_request_or_latest_state(tmp_p
     ros = OnlineRos()
     client = TestClient(create_app(ros, tmp_path, tmp_path/'missing-ui'))
     request = dict(operation='controller_apply', axis=1, controller_type='pid',
-                   parameters=dict(kp=.001,ki=0.,kd=.0001), set_reference=True,
+                   parameters=dict(kp=.001,ki=0.,kd=.0001,d_filter_hz=50.), set_reference=True,
                    slew_enabled=False, slew_rate_mm_s=100.)
     response = client.post('/api/command', json=request)
     assert response.status_code == 200
     readback = response.json()['controller_readback']
     assert readback['controller_revision'] == 42 and readback['axis'] == 1
-    assert readback['controller']['parameter_values'] == [.0001,.001,0.]
+    assert readback['controller']['parameter_values'] == [.0001,.001,0.,50.]
     assert response.json()['state']['controllers'][0]['type'] == 'later-setting'
-    assert list(ros.request.parameter_names) == ['kp','ki','kd']
-    ros.actual.parameter_values = [.0002,.001,0.]
+    assert list(ros.request.parameter_names) == ['kp','ki','kd','d_filter_hz']
+    ros.actual.parameter_values = [.0002,.001,0.,50.]
     assert client.post('/api/command', json=request).status_code == 409
-    ros.actual.parameter_values = [.0001,.001,0.]
+    ros.actual.parameter_values = [.0001,.001,0.,25.]
+    assert client.post('/api/command', json=request).status_code == 409
+    ros.actual.parameter_values = [.0001,.001,0.,50.]
     ros.actual.slew_enabled = True
     assert client.post('/api/command', json=request).status_code == 409
     ros.has_readback = False

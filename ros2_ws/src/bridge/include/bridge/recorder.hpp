@@ -31,6 +31,7 @@ inline std::vector<Signal> signal_catalog() {
         add(prefix+"kp","duty/count",group,[a](const Sample& s){return s.controllers[a].parameters[0];});
         add(prefix+"ki","duty/(count*s)",group,[a](const Sample& s){return s.controllers[a].parameters[1];});
         add(prefix+"kd","duty*s/count",group,[a](const Sample& s){return s.controllers[a].parameters[2];});
+        add(prefix+"d_filter_hz","Hz",group,[a](const Sample& s){return s.controllers[a].parameters[3];});
         add(prefix+"duty_limit","duty",group,[a](const Sample& s){return s.tuning[a].limit;});
         add(prefix+"mode","enum",group,[a](const Sample& s){return s.mode[a];});
         add(prefix+"pwm_target","duty",group,[a](const Sample& s){return s.pwm[a];});

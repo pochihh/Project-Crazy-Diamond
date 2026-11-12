@@ -39,5 +39,32 @@ int main() {
     near(pid.step(10,dt),.1);near(pid.step(12,dt),4.1201);
     pid.reset();near(pid.step(10,dt),.1); // No derivative kick on initialization.
     pid.tuning.sign=-1;pid.reset();near(pid.step(10,dt),-.1);
-    std::cout<<"PASS: P/PD saturation, live tuning, zero Ki, anti-windup, derivative units and polarity\n";
+
+    PidController filtered;filtered.tuning={0,0,.0001,1,1,50};
+    near(filtered.step(0,dt),0);
+    double d=filtered.step(1,dt),area=d*dt;
+    assert(d>0&&d<.03); // Raw one-count derivative would produce .2 duty.
+    for(int i=0;i<2000;i++) {
+        const auto previous=d;d=filtered.step(1,dt);
+        assert(d>=0&&d<=previous);area+=d*dt;
+    }
+    near(d,0);near(area,.0001); // Attenuate the peak without changing integrated D response.
+    filtered.reset();
+    for(int i=0;i<1000;i++)d=filtered.step(i,dt);
+    near(d,.2); // Constant velocity retains the derivative's DC gain.
+    auto filter_tuning=filtered.tuning;filter_tuning.d_filter_hz=5;
+    filtered.retune(filter_tuning,true);near(filtered.step(1000,dt),.2);
+    filter_tuning.d_filter_hz=0;filtered.retune(filter_tuning,true);
+    near(filtered.step(1000,dt),0);near(filtered.step(1001,dt),.2);
+    filter_tuning.d_filter_hz=50;filtered.retune(filter_tuning,true);filtered.reset();
+    near(filtered.step(500,dt),0);
+
+    PidController plain_pi,filtered_pi;
+    plain_pi.tuning={.001,.01,0,1,1,0};filtered_pi.tuning={.001,.01,0,1,1,50};
+    for(int i=0;i<2000;i++)near(plain_pi.step(20*std::sin(i*.01),dt),filtered_pi.step(20*std::sin(i*.01),dt));
+    config.parameters[3]=50;assert(valid_controller(config));
+    config.parameters[3]=-1;assert(!valid_controller(config));
+    config.parameters[3]=1001;assert(!valid_controller(config));
+    config.parameters[3]=NAN;assert(!valid_controller(config));
+    std::cout<<"PASS: P/PD saturation, tuning, anti-windup, D units, low-pass/bypass/reset, live cutoff and unchanged PI\n";
 }

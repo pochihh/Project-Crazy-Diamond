@@ -60,7 +60,7 @@ try:
     state = command('profile_create', profile=name, controller_revision=state['controller_revision'][0])
     command('profile_load', 1, profile=name)
     baseline = parameters(state['controllers'][0])
-    changed = {**baseline, 'kp': baseline['kp'] * 1.1, 'ki': baseline['ki'] * 1.1}
+    changed = {**baseline, 'kp': baseline['kp'] * 1.1, 'ki': baseline['ki'] * 1.1, 'd_filter_hz': 25.0}
     for a in range(2):
         command('axis', a, enabled=True)
     command('system', enabled=True)
@@ -105,6 +105,7 @@ try:
         assert changed in snapshots
         assert all(p==baseline or p==changed for p in snapshots), 'Partial controller update in recording'
         assert all(row[f'axis{a}_controller_type']=='pid' for row in rows)
+        assert 25.0 in [float(row[f'axis{a}_d_filter_hz']) for row in rows]
     assert all(int(b['sample'])==int(a['sample'])+1 for a,b in zip(rows, rows[1:]))
     print(json.dumps(dict(result='PASS', physical=args.physical, samples=len(rows), recording=state['recording_file'],
                          live_tuning=True, shared_profile_isolation=True, explicit_reload=True,

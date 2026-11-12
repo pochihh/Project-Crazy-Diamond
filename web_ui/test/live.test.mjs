@@ -97,10 +97,10 @@ test('controller parameters travel together in one command',async()=>{
       const request=JSON.parse(options.body);
       assert.equal(request.operation,'controller_apply');
       assert.equal(request.controller_type,'pid');
-      assert.deepEqual(request.parameters,{kp:.0005,ki:.001,kd:0});
+      assert.deepEqual(request.parameters,{kp:.0005,ki:.001,kd:0,d_filter_hz:50});
       return new Response(JSON.stringify({command_id:6}));
     };
-    await command('controller_apply',1,0,false,{controller_type:'pid',parameters:{kp:.0005,ki:.001,kd:0}});
+    await command('controller_apply',1,0,false,{controller_type:'pid',parameters:{kp:.0005,ki:.001,kd:0,d_filter_hz:50}});
   } finally {globalThis.fetch=original;}
 });
 test('browser settings accept only supported values and recover from stale storage',()=>{

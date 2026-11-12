@@ -3,7 +3,7 @@ import math
 RATE = 2000
 DEFAULT_SIGNALS = [f'axis{a}_{field}' for a in range(2) for field in
                    ('target_mm','reference_mm','position_mm','requested_duty','output_duty',
-                    'kp','ki','kd','slew_enabled','slew_rate_mm_s')]+['do0_command','do0','runner_row','runner_cycles']
+                    'kp','ki','kd','d_filter_hz','slew_enabled','slew_rate_mm_s')]+['do0_command','do0','runner_row','runner_cycles']
 
 
 def sine(period_s, amplitudes, offsets, phase_deg, pulse_width_ms):

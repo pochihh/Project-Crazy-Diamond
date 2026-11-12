@@ -111,7 +111,7 @@ int main() {
     assert(live.step(10,dt)>0.1); // New Ki takes effect without resetting state.
     Control online;online.receive({});online.apply({Op::axis,0,0,true});online.apply({Op::system,0,0,true});
     online.state.profiles[0]=profile_id("shared");
-    Command tune;tune.op=Op::controller;tune.controller.parameters={0.0006,0.002,0.00001};
+    Command tune;tune.op=Op::controller;tune.controller.parameters={0.0006,0.002,0.00001,50};
     online.apply(tune);assert(online.mask()==1&&online.state.command_error==Error::none);
     assert(online.controllers[0].config.parameters==tune.controller.parameters&&online.controllers[1].config.parameters[0]==0.0005);
     assert(std::string(online.state.profiles[0].data())=="shared");

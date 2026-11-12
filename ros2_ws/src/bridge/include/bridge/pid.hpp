@@ -2,7 +2,7 @@
 #include <algorithm>
 #include <cmath>
 namespace diamond {
-struct Tuning { double kp=0.0005, ki=0.001, kd=0, sign=-1, limit=1; };
+struct Tuning { double kp=0.0005, ki=0.001, kd=0, sign=-1, limit=1, d_filter_hz=0; };
 struct PidController {
     Tuning tuning{};
     double integral=0, previous=0, previous_derivative=0;
@@ -18,7 +18,12 @@ struct PidController {
     }
     double step(double error, double dt) {
         if(tuning.ki==0) integral=0;
-        const double derivative=have_previous ? (error-previous)/dt : 0;
+        const double raw_derivative=have_previous ? (error-previous)/dt : 0;
+        double derivative=raw_derivative;
+        if(tuning.d_filter_hz>0) {
+            const double ratio=6.283185307179586*tuning.d_filter_hz*dt;
+            derivative=previous_derivative+(ratio/(1+ratio))*(raw_derivative-previous_derivative);
+        }
         const double raw=tuning.kp*error+integral+tuning.kd*derivative;
         if (!std::isfinite(raw)) return NAN;
         const double output=std::clamp(raw,-tuning.limit,tuning.limit);

@@ -6,6 +6,7 @@ parameters:
   kp: 0.001
   ki: 0.001
   kd: 0.0
+  d_filter_hz: 0.0
 reference:
   type: passthrough
   max_rate_mm_s: 20.0
