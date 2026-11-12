@@ -58,6 +58,18 @@ def test_recording_download_contract(tmp_path):
     assert client.get('/api/recordings/session-missing.csv').status_code == 404
 
 
+def test_recordings_sort_by_modification_time_across_filename_formats(tmp_path):
+    import os
+    old = tmp_path / 'session-old.csv'
+    new = tmp_path / '2026-11-12_09-30-00.csv'
+    old.write_text('old')
+    new.write_text('new')
+    os.utime(old, ns=(1, 1))
+    os.utime(new, ns=(2, 2))
+    client = TestClient(create_app(FakeRos(), tmp_path, tmp_path / 'missing-ui'))
+    assert [entry['name'] for entry in client.get('/api/recordings').json()] == [new.name, old.name]
+
+
 class TopicRos(FakeRos):
     destroyed = False
 

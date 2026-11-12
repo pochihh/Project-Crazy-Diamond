@@ -42,6 +42,7 @@ export function dataTools(){
             el('runner-state').textContent=['IDLE','RUNNING','HOLDING FINAL VALUES','COMPLETE / STOPPED','INTERRUPTED'][s.runner_state]||'—';
             el('runner-progress').textContent=`${s.program_name||'No program loaded'} · ${s.program_rows||0} rows · row ${s.program_rows?s.runner_row+1:0} · ${s.runner_cycles||0} completed cycles`;
             el('runner-active-options').textContent=owned?`Active completion: ${s.runner_completion} · recording ${s.recording?'ON':'OFF'}`:'';
+            if(owned){el<HTMLSelectElement>('runner-completion').value=s.runner_completion;el<HTMLInputElement>('runner-record').checked=s.recording;}
             el('runner-error').textContent=s.runner_error||'';
             if(owned)for(let a=0;a<2;a++)if(s.runner_axis_mask&(1<<a))for(const id of ['slider','target','apply','mode','zero'])(el(`${id}-${a}`) as HTMLInputElement).disabled=true;
             const robot=s.robot;const slot=el('robot-slot');slot.hidden=!robot||robot.version!==1;

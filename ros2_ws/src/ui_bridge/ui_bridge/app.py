@@ -314,7 +314,7 @@ def create_app(ros, recordings: Path, static: Path, project=None):
     async def list_recordings():
         active = ros.state.get('recording_file') if ros.state.get('recording') else None
         return [{'name': p.name, 'bytes': p.stat().st_size, 'active': p.name == active}
-                for p in sorted(recordings.glob('*.csv'), reverse=True)]
+                for p in sorted(recordings.glob('*.csv'), key=lambda p: p.stat().st_mtime_ns, reverse=True)]
 
     @app.get('/api/recordings/{name}')
     async def download(name: str):
