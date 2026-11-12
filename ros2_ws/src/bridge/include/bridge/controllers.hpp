@@ -17,10 +17,12 @@ inline constexpr std::array<ControllerType,1> controller_types={{
 }};
 struct ControllerConfig {
     uint8_t type=0;
+    bool slew_enabled=false;
+    double slew_rate_mm_s=20;
     std::array<double,max_controller_parameters> parameters{0.0005,0.001,0};
 };
 inline bool valid_controller(const ControllerConfig& c) {
-    if(c.type>=controller_types.size())return false;
+    if(c.type>=controller_types.size() || !std::isfinite(c.slew_rate_mm_s) || c.slew_rate_mm_s<=0)return false;
     const auto& type=controller_types[c.type];
     for(unsigned i=0;i<c.parameters.size();i++) {
         const auto value=c.parameters[i];
@@ -42,10 +44,11 @@ inline ProfileId profile_id(const std::string& id) {
 class AxisController {
     // Add the new implementation here and its descriptor above when rebuilding.
     std::variant<PidController> implementation_;
+    bool have_reference_=false;
 public:
     ControllerConfig config{};
-    double sign=-1,limit=1;
-    void reset(){std::visit([](auto& p){p.reset();},implementation_);}
+    double sign=-1,limit=1,reference_mm=0;
+    void reset(){have_reference_=false;std::visit([](auto& p){p.reset();},implementation_);}
     Tuning tuning() const {return {config.parameters[0],config.parameters[1],config.parameters[2],sign,limit};}
     void configure(const ControllerConfig& next,bool running) {
         if(!valid_controller(next))throw std::runtime_error("Invalid controller configuration");
@@ -53,7 +56,10 @@ public:
         config=next;
         std::get<PidController>(implementation_).retune(tuning(),running);
     }
-    double step(double error,double dt) {
+    double step(double target_mm,double position_mm,double counts_per_mm,double dt) {
+        if(!have_reference_){reference_mm=position_mm;have_reference_=true;}
+        reference_mm=config.slew_enabled ? reference_mm+std::clamp(target_mm-reference_mm,-config.slew_rate_mm_s*dt,config.slew_rate_mm_s*dt) : target_mm;
+        const double error=(reference_mm-position_mm)*counts_per_mm;
         return std::visit([&](auto& p){p.tuning.sign=sign;p.tuning.limit=limit;return p.step(error,dt);},implementation_);
     }
 };

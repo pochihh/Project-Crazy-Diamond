@@ -7,6 +7,9 @@ string profile
 string[] parameter_names
 float64[] parameter_values
 uint64 controller_revision
+bool set_reference
+bool slew_enabled
+float64 slew_rate_mm_s 20.0
 ---
 bool accepted
 uint64 command_id

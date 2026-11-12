@@ -1,0 +1,7 @@
+string name
+uint8[] channels
+float64[] values
+---
+bool accepted
+uint64 command_id
+string message

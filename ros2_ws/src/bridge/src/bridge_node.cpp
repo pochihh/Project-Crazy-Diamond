@@ -2,6 +2,13 @@
 #include "bridge/profiles.hpp"
 #include "bridge/diagnostics.hpp"
 #include "bridge/inputs.hpp"
+#include "bridge/runner.hpp"
+#include "bridge/recorder.hpp"
+#include <interfaces/msg/data_preview.hpp>
+#include <interfaces/srv/signal_catalog.hpp>
+#include <interfaces/srv/logger_command.hpp>
+#include <interfaces/srv/load_program.hpp>
+#include <interfaces/srv/runner_command.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <interfaces/msg/bridge_state.hpp>
 #include <interfaces/msg/command_result.hpp>
@@ -33,7 +40,6 @@ public:
         mock_=declare_parameter("mock",true);
         device_=declare_parameter("spi_device",std::string("/dev/spidev0.0"));
         directory_=declare_parameter("recording_directory",std::string("recordings"));
-        core_.speed_mm_s=declare_parameter("speed_mm_s",20.0);
         core_.tracking_limit_mm=declare_parameter("tracking_limit_mm",15.0);
         profiles_=std::make_unique<Profiles>(declare_parameter("controller_directory",std::string("projects/")+DIAMOND_PROJECT_ID+"/controllers"));
         for(unsigned a=0;a<kAxes;a++) {
@@ -61,9 +67,10 @@ public:
                 core_.state.profiles[a]=profile.id;
             }
         }
-        if(!(core_.speed_mm_s>0&&core_.speed_mm_s<=100)||!(core_.tracking_limit_mm>0&&core_.tracking_limit_mm<=100))
+        if(!(core_.tracking_limit_mm>0&&core_.tracking_limit_mm<=100))
             throw std::runtime_error("Invalid motion limits");
         fs::create_directories(directory_);
+        recorder_=std::make_unique<Recorder>(directory_);
         diagnostics_.open(fs::path(directory_)/"realtime-events.jsonl",std::ios::app);
         if(!diagnostics_)throw std::runtime_error("Cannot open real-time event log");
         publisher_=create_publisher<interfaces::msg::BridgeState>("/bridge/state",rclcpp::QoS(1).reliable());
@@ -88,6 +95,17 @@ public:
                 else {response->message="Unsupported DSP operation (v5 has no reboot command)";return;}
                 enqueue(c,*response);
             });
+        preview_publisher_=create_publisher<interfaces::msg::DataPreview>("/data/preview",rclcpp::QoS(1).best_effort());
+        signals_service_=create_service<interfaces::srv::SignalCatalog>("/data/signals",
+            [this](const interfaces::srv::SignalCatalog::Request::SharedPtr,interfaces::srv::SignalCatalog::Response::SharedPtr out){
+                for(const auto& field:recorder_->catalog){interfaces::msg::Signal msg;msg.name=field.name;msg.unit=field.unit;msg.group=field.group;msg.numeric=bool(field.number);out->signals.push_back(msg);}
+            });
+        logger_service_=create_service<interfaces::srv::LoggerCommand>("/data/logger",
+            [this](const interfaces::srv::LoggerCommand::Request::SharedPtr req,interfaces::srv::LoggerCommand::Response::SharedPtr out){logger_command(*req,*out);});
+        program_service_=create_service<interfaces::srv::LoadProgram>("/data/program",
+            [this](const interfaces::srv::LoadProgram::Request::SharedPtr req,interfaces::srv::LoadProgram::Response::SharedPtr out){load_program(*req,*out);});
+        runner_service_=create_service<interfaces::srv::RunnerCommand>("/data/runner",
+            [this](const interfaces::srv::RunnerCommand::Request::SharedPtr req,interfaces::srv::RunnerCommand::Response::SharedPtr out){runner_command(*req,*out);});
         joints_=create_publisher<sensor_msgs::msg::JointState>("/joint_states",rclcpp::SensorDataQoS());
         service_=create_service<interfaces::srv::Command>("/bridge/command",
             [this](const std::shared_ptr<interfaces::srv::Command::Request> request,
@@ -111,6 +129,15 @@ private:
     bool mock_;
     std::string device_,directory_;
     Control core_;
+    Runner runner_;
+    std::unique_ptr<Recorder> recorder_;
+    std::unique_ptr<Program> program_,pending_program_;
+    uint64_t program_command_id_=0,record_command_id_=0,preview_sequence_=0;
+    rclcpp::Publisher<interfaces::msg::DataPreview>::SharedPtr preview_publisher_;
+    rclcpp::Service<interfaces::srv::SignalCatalog>::SharedPtr signals_service_;
+    rclcpp::Service<interfaces::srv::LoggerCommand>::SharedPtr logger_service_;
+    rclcpp::Service<interfaces::srv::LoadProgram>::SharedPtr program_service_;
+    rclcpp::Service<interfaces::srv::RunnerCommand>::SharedPtr runner_service_;
     std::unique_ptr<Profiles> profiles_;
     Queue<Command,128> commands_;
     Inputs inputs_;
@@ -125,10 +152,7 @@ private:
     std::atomic<bool> quit_{false},stop_{false};
     std::thread worker_;
     Sample latest_{};
-    uint64_t next_command_=0,next_order_=0,last_dsp_sample_=0,record_start_restarts_=0,record_id_=0,recorded_=0,last_recorded_sample_=0;
-    bool stopping_record_=false;
-    std::ofstream csv_;
-    std::string recording_file_,recording_error_;
+    uint64_t next_command_=0,next_order_=0,last_dsp_sample_=0,record_id_=0;
     rclcpp::Publisher<interfaces::msg::BridgeState>::SharedPtr publisher_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joints_;
     rclcpp::Publisher<interfaces::msg::DspState>::SharedPtr dsp_publisher_;
@@ -144,7 +168,7 @@ private:
 
     static interfaces::msg::ControllerProfile profile_message(const ProfileId& id,const ControllerConfig& config) {
         interfaces::msg::ControllerProfile msg;const auto& type=controller_types[config.type];
-        msg.id=id.data();msg.type=type.id;
+        msg.id=id.data();msg.type=type.id;msg.slew_enabled=config.slew_enabled;msg.slew_rate_mm_s=config.slew_rate_mm_s;
         for(unsigned i=0;i<type.count;i++) {msg.parameter_names.push_back(type.parameters[i].name);msg.parameter_values.push_back(config.parameters[i]);}
         return msg;
     }
@@ -193,6 +217,9 @@ private:
             try {
                 if(op=="controller_apply") {
                     c.op=Op::controller;c.controller=Profiles::parameters(req.controller_type,req.parameter_names,req.parameter_values);
+                    c.controller.slew_enabled=req.set_reference?req.slew_enabled:latest_.controllers[c.axis].slew_enabled;
+                    c.controller.slew_rate_mm_s=req.set_reference?req.slew_rate_mm_s:latest_.controllers[c.axis].slew_rate_mm_s;
+                    if(!valid_controller(c.controller))throw std::runtime_error("Invalid reference processing parameters");
                 } else if(op=="profile_load") {
                     // shortcut: startup assignment stays in bridge.yaml until project configuration editing is added.
                     const auto profile=profiles_->load(req.profile);
@@ -209,42 +236,61 @@ private:
                 }
             } catch(const std::exception& e){out.message=e.what();return;}
         }
-        else if(op=="record_start") {
-            if(csv_.is_open()) {out.message="A recording is already active";return;}
-            const auto id=static_cast<uint64_t>(std::chrono::system_clock::now().time_since_epoch().count());
-            recording_file_="session-"+std::to_string(id)+".csv";
-            csv_.open(fs::path(directory_)/recording_file_);
-            if(!csv_) {csv_.clear();out.message="Cannot create recording";return;}
-            csv_<<"# project="<<DIAMOND_PROJECT_ID<<"; axis0_counts_per_mm="<<std::setprecision(15)<<latest_.scale[0]
-                <<"; axis1_counts_per_mm="<<latest_.scale[1]<<"; mock="<<mock_<<"\n";
-            csv_<<"timestamp_us,sample,axis0_target_mm,axis0_reference_mm,axis0_position_mm,axis0_raw_counts,axis0_zero_counts,axis0_requested_duty,axis0_output_duty,axis0_enabled,axis0_kp,axis0_ki,axis0_kd,axis0_duty_limit,axis0_mode,axis0_pwm_target,axis1_target_mm,axis1_reference_mm,axis1_position_mm,axis1_raw_counts,axis1_zero_counts,axis1_requested_duty,axis1_output_duty,axis1_enabled,axis1_kp,axis1_ki,axis1_kd,axis1_duty_limit,axis1_mode,axis1_pwm_target,dsp_sequence,dsp_command_sequence,dsp_arm_mask,dsp_fault,digital_in,digital_out,analog_valid,ai0_raw,ai1_raw,ai2_raw,ai3_raw,ai4_raw,ai5_raw,ao0_raw,ao1_raw,encoder_valid,encoder0_counts,encoder1_counts,encoder2_counts,encoder3_counts,encoder4_counts,encoder5_counts,axis0_controller_type,axis0_controller_profile,axis0_controller_parameters,axis1_controller_type,axis1_controller_profile,axis1_controller_parameters\n";
-            record_start_restarts_=latest_.dsp_restarts;
-            recorded_=0;last_recorded_sample_=0; recording_error_.clear(); stopping_record_=false;
-            record_id_++;
-            c.op=Op::record;c.value=static_cast<double>(record_id_);
-        } else if(op=="record_stop") {
-            if(!csv_.is_open()) {out.message="No recording active";return;}
-            c.op=Op::record;c.value=0;stopping_record_=true;
+        else if(op=="record_start"||op=="record_stop") {
+            interfaces::srv::LoggerCommand::Request r;r.operation=op=="record_start"?"start":"stop";
+            logger_command(r,out);return;
         } else {out.message="Unknown operation";return;}
         enqueue(c,out);
-        if(!out.accepted) {
-            if(op=="record_start") finish_recording();
-            if(op=="record_stop") stopping_record_=false;
+    }
+    void finish_recording(){recorder_->finish();}
+    template<class Response> void logger_command(const interfaces::srv::LoggerCommand::Request& req,Response& out) {
+        drain();
+        Command c{};c.op=Op::record;
+        if(req.operation=="start") {
+            if(!latest_.connected){out.message="DSP is not connected";return;}
+            try{recorder_->start(++record_id_,req.signals,latest_,DIAMOND_PROJECT_ID);}
+            catch(const std::exception& e){out.message=e.what();return;}
+            c.value=static_cast<double>(record_id_);
+        }else if(req.operation!="stop"){out.message="Unknown logger operation";return;}
+        enqueue(c,out);
+        if(req.operation=="start") {
+            if(!out.accepted)finish_recording();else record_command_id_=out.command_id;
         }
     }
-
-    void finish_recording() {
-        if(!csv_.is_open()) return;
-        csv_.flush();
-        if(!csv_) recording_error_="Recording write failed (check disk space)";
-        csv_.close();csv_.clear();stopping_record_=false;
+    void load_program(const interfaces::srv::LoadProgram::Request& req,interfaces::srv::LoadProgram::Response& out) {
+        drain();
+        if(pending_program_||runner_.owns(latest_)||latest_.command_id!=next_command_){out.message="Stop the runner and wait for pending commands before loading";return;}
+        auto candidate=std::make_unique<Program>();candidate->id=next_command_+1;
+        candidate->name=req.name;candidate->channels=req.channels;candidate->values=req.values;
+        try{validate_program(*candidate,latest_);}catch(const std::exception& e){out.message=e.what();return;}
+        Command c{};c.op=Op::runner_load;c.program=candidate.get();
+        enqueue(c,out);
+        if(out.accepted){program_command_id_=out.command_id;pending_program_=std::move(candidate);}
     }
+    void runner_command(const interfaces::srv::RunnerCommand::Request& req,interfaces::srv::RunnerCommand::Response& out) {
+        drain();Command c{};
+        if(req.operation=="stop"){c.op=Op::runner_stop;enqueue(c,out);return;}
+        if(req.operation!="start"){out.message="Unknown runner operation";return;}
+        if(pending_program_||!program_||runner_.owns(latest_)||latest_.command_id!=next_command_){out.message="Load a program, stop any active run, and wait for pending commands";return;}
+        if(req.completion!="hold"&&req.completion!="stop"&&req.completion!="loop"){out.message="Completion must be hold, stop or loop";return;}
+        if(!latest_.connected||latest_.fault!=Error::none){out.message="Connect and clear the host fault before starting";return;}
+        c.op=Op::runner_start;c.value=req.completion=="hold"?0:req.completion=="stop"?1:2;c.enabled=req.auto_enable;
+        if(req.record) {
+            try{recorder_->start(++record_id_,req.signals,latest_,DIAMOND_PROJECT_ID);c.record=record_id_;}
+            catch(const std::exception& e){out.message=e.what();return;}
+        }
+        enqueue(c,out);
+        if(req.record){if(!out.accepted)finish_recording();else record_command_id_=out.command_id;}
+    }
+
     void drain() {
         Result result;
         while(results_.pop(result)) {
             interfaces::msg::CommandResult msg;msg.command_id=result.id;
             msg.applied=result.error==Error::none;msg.message=error_text(result.error);
             result_publisher_->publish(msg);
+            if(result.id==record_command_id_&&result.error!=Error::none)finish_recording();
+            if(result.id==program_command_id_&&result.error!=Error::none)pending_program_.reset();
         }
         if(const auto lost=lost_results_.exchange(0))RCLCPP_ERROR(get_logger(),"Command result queue overflow: %lu results lost",lost);
         RealtimeEvent event;
@@ -266,45 +312,27 @@ private:
             RCLCPP_ERROR(get_logger(),"Real-time event file write failed; event summaries continue in this journal");
         }
         Sample s;
+        interfaces::msg::DataPreview preview;
+        const auto count=recorder_->catalog.size();
+        preview.latest.resize(count);preview.minimum.assign(count,INFINITY);preview.maximum.assign(count,-INFINITY);
+        bool have_sample=false;
         while(samples_.pop(s)) {
-            latest_=s;
-            if(csv_.is_open() && s.dsp_restarts!=record_start_restarts_) {
-                recording_error_="Recording ended because the DSP restarted; a new startup zero was established";
-                finish_recording();
+            latest_=s;recorder_->write(s);
+            if(!s.connected)continue;
+            have_sample=true;preview.timestamp_us=s.timestamp;
+            for(size_t i=0;i<count;i++) {
+                const auto& field=recorder_->catalog[i];const auto v=field.number?field.number(s):0;
+                preview.latest[i]=v;preview.minimum[i]=std::min(preview.minimum[i],v);preview.maximum[i]=std::max(preview.maximum[i],v);
             }
-            if(csv_.is_open() && s.record_id==record_id_ && s.connected && s.number!=last_recorded_sample_) {
-                last_recorded_sample_=s.number;
-                csv_<<s.timestamp<<','<<s.number;
-                for(unsigned a=0;a<2;a++) {
-                    csv_<<','<<s.target[a]<<','<<s.reference[a]<<','<<s.position[a]<<','<<s.telemetry.position[a]
-                        <<','<<s.zero[a]<<','<<s.telemetry.requested_duty[a]<<','<<s.telemetry.duty[a]
-                        <<','<<(s.system&&s.selected[a]&&s.fault==Error::none)
-                        <<','<<s.tuning[a].kp<<','<<s.tuning[a].ki<<','<<s.tuning[a].kd<<','<<s.tuning[a].limit
-                        <<','<<static_cast<unsigned>(s.mode[a])<<','<<s.pwm[a];
-                }
-                csv_<<','<<s.telemetry.sequence<<','<<s.telemetry.command_sequence<<','<<s.telemetry.arm_mask
-                    <<','<<s.telemetry.fault<<','<<s.telemetry.digital_in<<','<<s.telemetry.digital_out<<','<<s.telemetry.analog_valid;
-                for(auto value:s.telemetry.analog_in)csv_<<','<<value;
-                for(auto value:s.telemetry.analog_out)csv_<<','<<value;
-                csv_<<','<<s.telemetry.encoder_valid;
-                for(auto value:s.telemetry.position)csv_<<','<<value;
-                for(unsigned a=0;a<2;a++) {
-                    const auto& config=s.controllers[a];const auto& type=controller_types[config.type];
-                    csv_<<','<<type.id<<','<<s.profiles[a].data()<<',';
-                    csv_<<std::setprecision(17);
-                    for(unsigned i=0;i<type.count;i++)csv_<<(i?";":"")<<type.parameters[i].name<<'='<<config.parameters[i];
-                    csv_<<std::setprecision(15);
-                }
-                csv_<<'\n';recorded_++;
-                if(!csv_) finish_recording();
-            } else if(csv_.is_open() && stopping_record_ && s.record_id==0) finish_recording();
         }
+        if(pending_program_&&latest_.program_id==pending_program_->id)program_=std::move(pending_program_);
+        if(have_sample){preview.sequence=++preview_sequence_;preview_publisher_->publish(preview);}
     }
     void publish() {
         const auto& s=latest_;
         interfaces::msg::BridgeState msg;
         msg.project_id=DIAMOND_PROJECT_ID;
-        msg.reference_speed_mm_s=core_.speed_mm_s;
+        
         msg.controller_revision=s.controller_revision;
         msg.control_mode=s.mode;msg.pwm_target=s.pwm;msg.counts_per_mm=s.scale;
         msg.minimum_mm=s.minimum;msg.maximum_mm=s.maximum;
@@ -336,8 +364,14 @@ private:
         d.invalid_frames=t.invalid_frames;d.rejected_commands=t.rejected_commands;d.command_timeout_count=t.watchdogs;
         d.encoder_errors=t.encoder_errors;d.cpu2_max_poll_us=t.cpu2_max_poll_us;
         if(s.telemetry_count!=last_dsp_sample_) {dsp_publisher_->publish(d);last_dsp_sample_=s.telemetry_count;}
-        msg.recording=csv_.is_open();msg.recording_file=recording_file_;msg.recorded_samples=recorded_;
-        msg.recording_error=recording_error_;
+        msg.recording=recorder_->active();msg.recording_file=recorder_->filename;msg.recorded_samples=recorder_->samples;
+        msg.recording_error=recorder_->error;msg.recorded_signals=recorder_->selected;
+        msg.program_id=s.program_id;msg.program_rows=s.runner_rows;
+        const auto* p=pending_program_&&pending_program_->id==s.program_id?pending_program_.get():program_.get();
+        if(p&&p->id==s.program_id)msg.program_name=p->name;
+        msg.runner_state=s.runner_state;msg.runner_row=s.runner_row;msg.runner_cycles=s.runner_cycles;
+        msg.runner_completion=s.runner_completion==0?"hold":s.runner_completion==1?"stop":"loop";
+        msg.runner_error=error_text(s.runner_error);msg.runner_axis_mask=s.runner_axes;msg.runner_do_mask=s.runner_digital;msg.runner_ao_mask=s.runner_analog;
         publisher_->publish(msg);
         sensor_msgs::msg::JointState j;
         j.header.stamp=now();j.name={"axis0","axis1"};j.position={s.position[0]/1000,s.position[1]/1000};
@@ -376,12 +410,19 @@ private:
             commands+=inputs_.take(pending.data()+commands);
             std::sort(pending.begin(),pending.begin()+commands,[](const Command& a,const Command& b){return a.order<b.order;});
             for(unsigned i=0;i<commands;i++) {
-                const auto& command=pending[i];core_.apply(command);
+                const auto& command=pending[i];
+                if(command.op==Op::runner_load||command.op==Op::runner_start||command.op==Op::runner_stop) {
+                    core_.state.command_error=runner_.command(command,core_);core_.state.command_id=command.id;
+                } else if(runner_.conflicts(command,core_.state)) {
+                    if(command.input){++core_.state.input_rejections;core_.state.input_error=Error::busy;core_.state.input_operation=command.op;core_.state.input_channel=command.axis;}
+                    else{core_.state.command_error=Error::busy;core_.state.command_id=command.id;}
+                } else core_.apply(command);
                 if(!command.input && !results_.push({command.id,core_.state.command_error}))++lost_results_;
             }
             // Stop wins over queued enables, even when the command queue was full.
-            if(stop_.exchange(false)) core_.apply({Op::stop,0,0,false,core_.state.command_id});
+            if(stop_.exchange(false)){runner_.stop(core_);core_.apply({Op::stop,0,0,false,core_.state.command_id});}
             if(link && !realtime_ready) core_.fail(Error::realtime);
+            runner_.tick(core_);
             const auto values=core_.duty();
             const auto mask=core_.mask();
             uint16_t operation=0;

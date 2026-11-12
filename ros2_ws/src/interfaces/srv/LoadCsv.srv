@@ -1,0 +1,10 @@
+string name
+string csv
+bool overwrite
+---
+bool accepted
+uint64 command_id
+string message
+string[] warnings
+uint64 rows
+uint8[] channels

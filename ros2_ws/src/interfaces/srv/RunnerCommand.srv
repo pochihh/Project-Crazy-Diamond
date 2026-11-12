@@ -1,0 +1,9 @@
+string operation
+string completion
+bool record
+bool auto_enable
+string[] signals
+---
+bool accepted
+uint64 command_id
+string message

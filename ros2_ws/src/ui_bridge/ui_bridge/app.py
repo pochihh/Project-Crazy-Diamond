@@ -1,4 +1,5 @@
 """Trusted-LAN API. Browser lifetime never owns motor or recording lifetime."""
+from collections import deque
 import asyncio
 import math
 import json
@@ -18,8 +19,8 @@ from rclpy.node import Node
 from rosidl_runtime_py.convert import message_to_ordereddict
 from rosidl_runtime_py.utilities import get_message
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from interfaces.msg import BridgeState, CommandResult, PositionCommand, DutyCommand, DigitalCommand, AnalogCommand
-from interfaces.srv import Command, ControllerCatalog, DspCommand
+from interfaces.msg import DataPreview, RobotPanel, BridgeState, CommandResult, PositionCommand, DutyCommand, DigitalCommand, AnalogCommand
+from interfaces.srv import LoggerCommand, RunnerCommand, LoadCsv, ListPrograms, SignalCatalog, Command, ControllerCatalog, DspCommand
 from ui_bridge.system_status import SystemStatus
 
 
@@ -39,9 +40,28 @@ class RosClient(Node):
             'analog': (self.create_publisher(AnalogCommand, '/dsp/analog_out', 16), AnalogCommand, 'channel', 'value'),
         }
         self.catalog_client = self.create_client(ControllerCatalog, '/bridge/controllers')
+        self.preview = {}
+        self.previews = deque(maxlen=100)
+        self.robot = {}
+        self.robot_received = 0.0
+        self.data_clients = {name:self.create_client(kind,topic) for name,kind,topic in [
+            ('logger',LoggerCommand,'/data/logger'),('runner',RunnerCommand,'/data/runner'),
+            ('load_csv',LoadCsv,'/data/load_csv'),('programs',ListPrograms,'/data/programs'),('signals',SignalCatalog,'/data/signals')]}
+        self.preview_sub = self.create_subscription(DataPreview,'/data/preview',self.update_preview,
+            QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT))
+        self.robot_sub = self.create_subscription(RobotPanel,'/robot/panel',self.update_robot,1)
         self.results = {}
         self.result_subscription = self.create_subscription(CommandResult, '/bridge/command_result', self.result, 256)
         self.subscription = self.create_subscription(BridgeState, '/bridge/state', self.update, 1)
+
+    def update_preview(self, message):
+        if self.preview and message.sequence<=self.preview["sequence"]: self.previews.clear()
+        self.preview = dict(message_to_ordereddict(message))
+        self.previews.append(self.preview)
+
+    def update_robot(self, message):
+        self.robot = dict(message_to_ordereddict(message))
+        self.robot_received = time.monotonic()
 
     def result(self, message):
         self.results[message.command_id] = message
@@ -65,6 +85,7 @@ class RosClient(Node):
         state = self.state.copy()
         age = time.monotonic() - self.received
         state.update(bridge_alive=age < 1.0, state_age_ms=round(age * 1000) if self.received else None)
+        state['robot'] = self.robot if time.monotonic()-self.robot_received < 2 else None
         return state
 
 
@@ -73,10 +94,24 @@ class Request(BaseModel):
     axis: int = Field(default=0, ge=0, le=5)
     value: float = 0.0
     enabled: bool = False
+    set_reference: bool = False
+    slew_enabled: bool = False
+    slew_rate_mm_s: float = 20.0
     controller_type: str = ''
     profile: str = ''
     parameters: dict[str, float] = Field(default_factory=dict)
     controller_revision: int = Field(default=0, ge=0)
+
+
+class DataRequest(BaseModel):
+    operation: str = ''
+    name: str = ''
+    csv: str = ''
+    overwrite: bool = False
+    completion: str = 'hold'
+    record: bool = False
+    auto_enable: bool = True
+    signals: list[str] = Field(default_factory=list)
 
 
 def load_project(root: Path):
@@ -114,6 +149,57 @@ def create_app(ros, recordings: Path, static: Path, project=None):
             await asyncio.sleep(0.005)
         return dict(message_to_ordereddict(future.result()))
 
+    async def data_service(name, request, applied=False):
+        client = ros.data_clients[name]
+        if not client.service_is_ready():
+            raise HTTPException(503, 'Data service unavailable')
+        future = client.call_async(request)
+        deadline = time.monotonic()+30
+        while not future.done():
+            if time.monotonic()>deadline: raise HTTPException(504, 'Data operation timed out; inspect live state')
+            await asyncio.sleep(.01)
+        result = future.result()
+        if hasattr(result,'accepted') and not result.accepted:
+            raise HTTPException(409,result.message)
+        if applied and result.command_id:
+            while result.command_id not in ros.results or ros.state.get('last_command_id',0)<result.command_id:
+                if time.monotonic()>deadline: raise HTTPException(504,'Data application timed out; inspect live state')
+                await asyncio.sleep(.005)
+            ack=ros.results[result.command_id]
+            if not ack.applied: raise HTTPException(409,ack.message)
+        return dict(message_to_ordereddict(result))
+
+    @app.get('/api/data/signals')
+    async def signals(): return await data_service('signals',SignalCatalog.Request())
+
+    @app.get('/api/data/programs')
+    async def programs(): return await data_service('programs',ListPrograms.Request())
+
+    @app.post('/api/data/{action}')
+    async def data_command(action: str, body: DataRequest):
+        if action=='logger': request=LoggerCommand.Request(operation=body.operation,signals=body.signals)
+        elif action=='runner': request=RunnerCommand.Request(operation=body.operation,completion=body.completion,record=body.record,auto_enable=body.auto_enable,signals=body.signals)
+        elif action=='load_csv': request=LoadCsv.Request(name=body.name,csv=body.csv,overwrite=body.overwrite)
+        else: raise HTTPException(404,'Unknown data action')
+        return await data_service(action,request,True)
+
+    @app.websocket('/ws/data')
+    async def data_preview(socket: WebSocket):
+        await socket.accept()
+        cursor=-1
+        try:
+            while True:
+                frames=list(ros.previews)
+                if frames and frames[-1]['sequence']<cursor: cursor=-1
+                frames=[frame for frame in frames if frame['sequence']>cursor]
+                await socket.send_json({'frames':frames})
+                if frames: cursor=frames[-1]['sequence']
+                try:
+                    event=await asyncio.wait_for(socket.receive(),timeout=.05)
+                    if event['type']=='websocket.disconnect': break
+                except asyncio.TimeoutError: pass
+        except (WebSocketDisconnect,RuntimeError): pass
+
     @app.post('/api/command')
     async def command(body: Request):
         if body.axis >= (4 if body.operation == 'digital' else 2 if body.operation == 'analog' else 6):
@@ -146,6 +232,8 @@ def create_app(ros, recordings: Path, static: Path, project=None):
                 request.parameter_names = list(body.parameters)
                 request.parameter_values = list(body.parameters.values())
                 request.controller_revision = body.controller_revision
+                request.set_reference = body.set_reference
+                request.slew_enabled, request.slew_rate_mm_s = body.slew_enabled, body.slew_rate_mm_s
             future = client.call_async(request)
             deadline = time.monotonic() + 3
             while not future.done():
@@ -226,11 +314,11 @@ def create_app(ros, recordings: Path, static: Path, project=None):
     async def list_recordings():
         active = ros.state.get('recording_file') if ros.state.get('recording') else None
         return [{'name': p.name, 'bytes': p.stat().st_size, 'active': p.name == active}
-                for p in sorted(recordings.glob('session-*.csv'), reverse=True)]
+                for p in sorted(recordings.glob('*.csv'), reverse=True)]
 
     @app.get('/api/recordings/{name}')
     async def download(name: str):
-        if Path(name).name != name or not name.startswith('session-') or not name.endswith('.csv'):
+        if Path(name).name != name or not name.endswith('.csv'):
             raise HTTPException(404, 'Recording not found')
         if ros.state.get('recording') and ros.state.get('recording_file') == name:
             raise HTTPException(409, 'Stop the recording before downloading')

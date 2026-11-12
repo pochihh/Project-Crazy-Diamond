@@ -4,7 +4,6 @@ bridge:
     mock: true
     spi_device: /dev/spidev0.0
     recording_directory: recordings
-    speed_mm_s: 20.0
     tracking_limit_mm: 15.0
     controller_directory: projects/heart_phantom/controllers
     axis0.controller_profile: bench_pid

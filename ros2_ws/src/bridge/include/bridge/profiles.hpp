@@ -31,17 +31,25 @@ public:
         if(!node.IsMap())throw std::runtime_error("Profile must be a mapping");
         for(const auto& entry:node) {
             const auto key=entry.first.as<std::string>();
-            if(key!="schema_version"&&key!="id"&&key!="type"&&key!="sample_period_s"&&key!="parameters")
+            if(key!="schema_version"&&key!="id"&&key!="type"&&key!="sample_period_s"&&key!="parameters"&&key!="reference")
                 throw std::runtime_error("Unknown profile field: "+key);
         }
-        if(node["schema_version"].as<unsigned>()!=1||node["id"].as<std::string>()!=id)
+        if(node["schema_version"].as<unsigned>()!=2||node["id"].as<std::string>()!=id)
             throw std::runtime_error("Profile schema or ID does not match: "+id);
         if(node["sample_period_s"].as<double>()!=1.0/kRateHz)throw std::runtime_error("Profile sample period does not match the control loop");
         const auto params=node["parameters"];
         if(!params.IsMap())throw std::runtime_error("Profile parameters must be a mapping");
         std::vector<std::string> names;std::vector<double> values;
         for(const auto& item:params){names.push_back(item.first.as<std::string>());values.push_back(item.second.as<double>());}
-        return {profile_id(id),parameters(node["type"].as<std::string>(),names,values)};
+        auto c=parameters(node["type"].as<std::string>(),names,values);
+        const auto reference=node["reference"];
+        const auto kind=reference["type"].as<std::string>();
+        if(kind!="passthrough"&&kind!="slew_limit")throw std::runtime_error("Unknown reference processing type");
+        for(const auto& entry:reference)if(entry.first.as<std::string>()!="type"&&entry.first.as<std::string>()!="max_rate_mm_s")throw std::runtime_error("Unknown reference parameter");
+        c.slew_enabled=kind=="slew_limit";
+        c.slew_rate_mm_s=reference["max_rate_mm_s"] ? reference["max_rate_mm_s"].as<double>() : 20;
+        if(!valid_controller(c))throw std::runtime_error("Invalid reference rate");
+        return {profile_id(id),c};
     }
     std::vector<std::string> ids() const {
         std::vector<std::string> out;
@@ -53,8 +61,10 @@ public:
         const auto destination=path(id);
         if(!valid_controller(c))throw std::runtime_error("Invalid controller parameters");
         if(!create&&!std::filesystem::exists(destination))throw std::runtime_error("Profile is missing; use Save as");
-        YAML::Node node;node["schema_version"]=1;node["id"]=id;node["type"]=controller_types[c.type].id;
+        YAML::Node node;node["schema_version"]=2;node["id"]=id;node["type"]=controller_types[c.type].id;
         node["sample_period_s"]=1.0/kRateHz;
+        node["reference"]["type"]=c.slew_enabled?"slew_limit":"passthrough";
+        node["reference"]["max_rate_mm_s"]=c.slew_rate_mm_s;
         for(unsigned i=0;i<controller_types[c.type].count;i++)node["parameters"][controller_types[c.type].parameters[i].name]=c.parameters[i];
         const auto temporary=destination.string()+"."+std::to_string(getpid())+".tmp";
         try {

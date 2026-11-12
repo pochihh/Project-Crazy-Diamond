@@ -7,7 +7,6 @@ bool[6] axis_enabled
 string project_id
 ControllerProfile[6] controllers
 uint64[6] controller_revision
-float64 reference_speed_mm_s
 uint8[6] control_mode
 float64[6] pwm_target
 float64[6] counts_per_mm
@@ -42,3 +41,16 @@ string input_error
 string input_topic
 uint8 input_channel
 DspState dsp
+
+string[] recorded_signals
+uint64 program_id
+string program_name
+uint64 program_rows
+uint8 runner_state
+uint64 runner_row
+uint64 runner_cycles
+string runner_completion
+string runner_error
+uint16 runner_axis_mask
+uint16 runner_do_mask
+uint16 runner_ao_mask

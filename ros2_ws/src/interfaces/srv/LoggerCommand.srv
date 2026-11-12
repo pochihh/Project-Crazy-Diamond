@@ -1,0 +1,6 @@
+string operation
+string[] signals
+---
+bool accepted
+uint64 command_id
+string message

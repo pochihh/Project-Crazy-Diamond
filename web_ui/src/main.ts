@@ -1,10 +1,11 @@
 import './style.css';
+import {dataTools, type DataState} from './data';
 import { command } from './command';
 import { PositionPlot } from './plot';
 import { layout, meter } from './layout';
 import { controllerPanel, type ControllerState } from './controllers';
 import { defaults, readSettings, type Settings } from './settings';
-type State = ControllerState & {
+type State = ControllerState & DataState & {
     protocol_version: number;
     control_rate_hz: number;
     dsp: {
@@ -72,6 +73,7 @@ const inputValue = (id: string, value: string) => { const el = $<HTMLInputElemen
     el.value = value; };
 $('app').innerHTML = layout;
 const controllers = controllerPanel();
+const data=dataTools();
 let project: Project = { id: 'heart_phantom', name: 'Heart Phantom', axes: [{ name: 'Axis 0' }, { name: 'Axis 1' }] };
 let settings: Settings;
 try {
@@ -164,11 +166,10 @@ $<HTMLInputElement>('system-enable').onchange = e => void act('system', 0, 0, (e
 $('stop').onclick = () => { pendingTargets.clear(); activeInputs.clear(); void act('stop'); };
 $('dsp-disarm').onclick = () => { pendingTargets.clear(); void act('dsp_disarm'); };
 $('dsp-clear').onclick = () => void act('dsp_clear');
-$('record-start').onclick = () => void act('record_start');
-$('record-stop').onclick = () => void act('record_stop');
 function closeTopics() { const sockets = [...topicSockets.values()]; topicSockets.clear(); sockets.forEach(ws => ws.close()); }
 document.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach(button => button.onclick = () => {
     activeTab = button.dataset.tab!;
+    data.tab(activeTab);
     document.querySelectorAll<HTMLElement>('[data-tab]').forEach(b => { const on = b === button; b.classList.toggle('active', on); if (on)
         b.setAttribute('aria-current', 'page');
     else
@@ -249,6 +250,7 @@ function render(s: State) {
 
     }
     controllers.render(s,live);
+    data.render(s,live);
     text('axis-note', s.control_mode?.slice(0,2).includes(1) ? 'PWM holds the last duty until set to zero or disabled.' : 'Targets hold on release and through browser disconnect.');
     text('dsp-rate', `${(s.control_rate_hz ?? 0).toLocaleString()} Hz`);
     text('dsp-link', live ? 'SPI / 10 MHz' : 'OFFLINE');
@@ -520,7 +522,6 @@ async function loadProject() { try {
     project = await getJSON('/api/project');
     text('project-name', project.name);
     text('project-description', project.description ?? 'Project control dashboard');
-    text('model-status', project.model_status ?? 'Robot model / kinematics to follow');
     text('project-footer', `PROJECT / ${project.name.toUpperCase()}`);
     text('controller-source', `projects/${project.id}/controllers/*.yaml`);
     for (let a = 0; a < 2; a++) {

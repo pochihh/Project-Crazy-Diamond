@@ -1,0 +1,16 @@
+[Unit]
+Description=Crazy Diamond phantom services
+After=network.target diamond-bridge.service
+
+[Service]
+Type=simple
+User=toby
+WorkingDirectory=/home/toby/Project-Crazy-Diamond
+ExecStart=/bin/bash /home/toby/Project-Crazy-Diamond/scripts/run_phantom.sh
+CPUAffinity=0 1 2
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

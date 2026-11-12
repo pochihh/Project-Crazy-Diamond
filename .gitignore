@@ -70,3 +70,6 @@ rosbag2_*/
 # Local Docker volumes
 /docker/data/
 /docker/volumes/
+
+# Uploaded experiment programs (persistent runtime data)
+/data/programs/

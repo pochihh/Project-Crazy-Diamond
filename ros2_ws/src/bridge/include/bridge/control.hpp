@@ -30,11 +30,13 @@ public:
     }
 };
 
-enum class Op { target, pwm, mode, axis, system, stop, zero, clear, clear_dsp, kp, ki, kd, limit, digital, analog, record, controller, profile };
-enum class Error { none, disabled_required, range, zero_required, wrong_mode, position_unconfigured, travel, not_ready, tracking, numeric, deadline, telemetry, dsp, realtime };
+struct Program;
+enum class Op { runner_load, runner_start, runner_stop, target, pwm, mode, axis, system, stop, zero, clear, clear_dsp, kp, ki, kd, limit, digital, analog, record, controller, profile };
+enum class Error { none, busy, disabled_required, range, zero_required, wrong_mode, position_unconfigured, travel, not_ready, tracking, numeric, deadline, telemetry, dsp, realtime };
 inline const char* error_text(Error e) {
     switch(e) {
     case Error::none: return "";
+    case Error::busy: return "The runner owns this channel or another operation is pending";
     case Error::disabled_required: return "Disable this axis before changing mode, controller type, zero, or duty limit";
     case Error::range: return "Value is outside the configured range or duty limit";
     case Error::zero_required: return "Measured position is outside travel range; reset zero before enabling";
@@ -56,8 +58,14 @@ struct Command {
     ControllerConfig controller{}; ProfileId profile{};
     uint64_t order=0;
     bool input=false;
+    const Program* program=nullptr;
+    uint64_t record=0;
 };
 struct Sample {
+    uint64_t program_id=0,runner_rows=0,runner_row=0,runner_cycles=0;
+    uint8_t runner_state=0,runner_completion=0;
+    uint16_t runner_axes=0,runner_digital=0,runner_analog=0;
+    Error runner_error=Error::none;
     Telemetry telemetry{};
     uint64_t number=0, timestamp=0, command_id=0, record_id=0;
     std::array<double,6> target{}, reference{}, position{};
@@ -85,7 +93,7 @@ class Control {
 public:
     Sample state{};
     std::array<AxisController,6> pid{};
-    double speed_mm_s=20, tracking_limit_mm=15;
+    double tracking_limit_mm=15;
     bool initialized=false, dsp_clear_requested=false;
     uint16_t mask() const {
         if (!state.system || state.fault!=Error::none || !state.connected) return 0;
@@ -200,7 +208,7 @@ private:
         case Op::record: state.record_id=static_cast<uint64_t>(c.value); break;
         case Op::controller:
             if(!state.position_configured[a]) {state.command_error=Error::position_unconfigured;return;}
-            if(enabled(a)&&c.controller.type!=pid[a].config.type) {state.command_error=Error::disabled_required;return;}
+            if(enabled(a)&&(c.controller.type!=pid[a].config.type || c.controller.slew_enabled!=pid[a].config.slew_enabled)) {state.command_error=Error::disabled_required;return;}
             if(!valid_controller(c.controller)) {state.command_error=Error::range;return;}
             pid[a].configure(c.controller,enabled(a));
             if(c.profile[0])state.profiles[a]=c.profile;
@@ -238,10 +246,10 @@ public:
                 result[a]=static_cast<float>(std::clamp(state.pwm[a],-pid[a].limit,pid[a].limit));
                 continue;
             }
-            state.reference[a]+=std::clamp(state.target[a]-state.reference[a],-speed_mm_s*dt,speed_mm_s*dt);
+            const double output=pid[a].step(state.target[a],state.position[a],state.scale[a],dt);
+            state.reference[a]=pid[a].reference_mm;
             const double error=(state.reference[a]-state.position[a])*state.scale[a];
             if(std::abs(error)>tracking_limit_mm*state.scale[a]) {fail(Error::tracking); return {};}
-            const double output=pid[a].step(error,dt);
             if(!std::isfinite(output)) {fail(Error::numeric);return {};}
             result[a]=static_cast<float>(std::clamp(output,-pid[a].limit,pid[a].limit));
             if(!std::isfinite(result[a])) {fail(Error::numeric); return {};}

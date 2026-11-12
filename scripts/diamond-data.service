@@ -1,0 +1,16 @@
+[Unit]
+Description=Crazy Diamond data services
+After=network.target diamond-bridge.service
+
+[Service]
+Type=simple
+User=toby
+WorkingDirectory=/home/toby/Project-Crazy-Diamond
+ExecStart=/bin/bash /home/toby/Project-Crazy-Diamond/scripts/run_data.sh
+CPUAffinity=0 1 2
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

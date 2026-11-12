@@ -6,6 +6,9 @@
 #include <thread>
 using namespace diamond;
 int main() {
+    AxisController unshaped;unshaped.step(10,0,1,dt);assert(unshaped.reference_mm==10);
+    unshaped.config.slew_enabled=true;unshaped.reset();unshaped.step(10,0,1,dt);
+    assert(unshaped.reference_mm==20*dt);
     const auto origin=Clock::time_point{};
     assert(missed_periods(origin,origin+control_period)==0);
     assert(missed_periods(origin,origin+control_period+Clock::duration{1})==1);
@@ -25,7 +28,7 @@ int main() {
     assert(log.str().find("\"ioctl_result\":192")!=std::string::npos);
     assert(log.str().find("\"missed_periods\":4,\"period_us\":500")!=std::string::npos);
     assert(log.str().find(",1234]}\n")!=std::string::npos);
-    Control c;Telemetry sample{};sample.position[0]=12345;sample.position[1]=-500;sample.timestamp_us=0xfffffff0;
+    Control c;c.pid[0].config.slew_enabled=true;Telemetry sample{};sample.position[0]=12345;sample.position[1]=-500;sample.timestamp_us=0xfffffff0;
     c.receive(sample);
     assert(c.state.position[0]==0&&c.state.zero[0]==12345);
     assert(std::abs(counts_per_mm-321.846662696944)<1e-9);

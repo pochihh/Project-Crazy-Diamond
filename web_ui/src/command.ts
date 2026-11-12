@@ -1,4 +1,4 @@
-export type ControllerCommand = {controller_type?: string; profile?: string; parameters?: Record<string,number>; controller_revision?: number};
+export type ControllerCommand = {set_reference?: boolean; slew_enabled?: boolean; slew_rate_mm_s?: number; controller_type?: string; profile?: string; parameters?: Record<string,number>; controller_revision?: number};
 export async function command(operation: string, axis = 0, value = 0, enabled = false, extra: ControllerCommand = {}) {
   const controller=new AbortController();
   const timeout=setTimeout(()=>controller.abort(),4000);
