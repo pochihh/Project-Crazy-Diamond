@@ -85,6 +85,18 @@ Disable a motor, move it manually, then Reset zero to establish another origin.
 The other axis can remain enabled. Browser reconnect/axis re-enable preserves
 that origin. Bridge/DSP restart establishes a new origin and remains disarmed.
 
+Reset is a `/bridge/command` operation applied by the realtime worker, not a
+browser display offset. It captures `zero_counts[axis]` from the latest DSP
+encoder count and clears that axis's target, reference, and controller history.
+All consumers, including Phantom and CSV playback, use the same coordinates:
+`position_mm = (dsp.position - zero_counts) / counts_per_mm`. The raw DSP encoder
+count intentionally remains unchanged; the reference sent to the DSP is
+`zero_counts + reference_mm * counts_per_mm`. The UI waits for the bridge's
+application acknowledgement before reporting success. Reset is rejected while
+the axis is enabled or an active/holding runner owns it. Once reset, a stationary
+axis should need no return-to-zero travel before a sine run. The robot's settling
+wait still runs. `tests/phantom_startup.py` checks this at nonzero raw encoder counts.
+
 Open the PCD UI at `http://<pi-address>:8000/`. Axis controls are independent of the
 optional robot panel. The Logger tab selects signals and records/downloads CSV;
 the Runner tab selects a saved program or uploads one. Any ROS node can operate

@@ -92,6 +92,36 @@ try:
         assert abs(float(rows[0][f'axis{a}_position_mm']))<=.1
     assert all(int(b['sample'])==int(a['sample'])+1 for a,b in zip(rows,rows[1:]))
     reports.append({'approach':'PASS','samples':len(rows),'recording':s['recording_file']})
+    # Reset at nonzero raw encoder counts, then start without returning to the old origin.
+    move_off_zero()
+    before=state()
+    for axis in (0,1):
+        reply=command('zero',axis)['state']
+        assert reply['zero_counts'][axis]==before['dsp']['position'][axis]
+        assert reply['position_mm'][axis]==reply['target_mm'][axis]==reply['reference_mm'][axis]==0
+    origin=state()['zero_counts'][:2]
+    assert all(v!=0 for v in origin)
+    wait(lambda:get(ROBOT,'/state')['bridge']['zero_counts'][:2]==origin)
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        future=pool.submit(post,ROBOT,'/command',dict(operation='start',source='sine',
+            amplitude_mm=[0.,0.],pulse_width_ms=0.,approach_speed_mm_s=2.))
+        observed=[]
+        while not future.done():
+            s=state();observed.append(s)
+            assert s['zero_counts'][:2]==origin
+            assert s['target_mm'][:2]==[0.,0.] and s['reference_mm'][:2]==[0.,0.]
+            assert s['dsp']['position'][:2]==origin
+            time.sleep(.02)
+        assert future.result()['accepted'] and len(observed)>5
+    wait(lambda:state()['recorded_samples']>=200)
+    post(ROBOT,'/command',{'operation':'stop'});s=wait(stopped)
+    with urlopen(UI+'/api/recordings/'+s['recording_file']) as response:
+        rows=list(csv.DictReader(io.StringIO('\n'.join(l for l in response.read().decode().splitlines() if not l.startswith('#')))))
+    for row in rows:
+        for axis in (0,1):
+            assert float(row[f'axis{axis}_target_mm'])==float(row[f'axis{axis}_reference_mm'])==float(row[f'axis{axis}_position_mm'])==0
+            assert float(row[f'axis{axis}_requested_duty'])==0
+    reports.append({'reset_origin_survives_robot_start':'PASS','zero_counts':origin,'samples':len(rows)})
     for stop_via in ('robot','stop_all'):
         move_off_zero()
         old_file=state()['recording_file']
