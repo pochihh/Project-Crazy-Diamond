@@ -18,7 +18,11 @@ def get(base,path):
 
 def post(base,path,body):
     request=Request(base+path,data=json.dumps(body).encode(),headers={'Content-Type':'application/json'})
-    with urlopen(request,timeout=30) as response:return json.load(response)
+    try:
+        with urlopen(request,timeout=30) as response:return json.load(response)
+    except HTTPError as error:
+        error.reason=f'{error.reason}: {error.read().decode()}'
+        raise
 
 
 def command(op,axis=0,**fields):
