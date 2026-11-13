@@ -153,12 +153,12 @@ class Phantom(Operations):
 class Request(BaseModel):
     operation:str='start'
     source:str='sine'
-    period_s:float=2
-    amplitude_mm:list[float]=Field(default_factory=lambda:[1,1])
-    offset_mm:list[float]=Field(default_factory=lambda:[0,0])
-    phase_deg:float=0
-    pulse_width_ms:float=5
-    approach_speed_mm_s:float=5
+    period_s:float=2.0
+    amplitude_mm:list[float]=Field(default_factory=lambda:[1.0,1.0])
+    offset_mm:list[float]=Field(default_factory=lambda:[0.0,0.0])
+    phase_deg:float=0.0
+    pulse_width_ms:float=5.0
+    approach_speed_mm_s:float=5.0
     completion:str='loop'
     filename:str=''
     csv:str=''

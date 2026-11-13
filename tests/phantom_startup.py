@@ -21,7 +21,7 @@ def post(base,path,body):
     try:
         with urlopen(request,timeout=30) as response:return json.load(response)
     except HTTPError as error:
-        error.reason=f'{error.reason}: {error.read().decode()}'
+        error.msg=f'{error.reason}: {error.read().decode()}'
         raise
 
 

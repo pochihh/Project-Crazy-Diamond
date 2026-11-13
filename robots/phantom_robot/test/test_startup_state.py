@@ -3,7 +3,18 @@ import time
 from types import MethodType, SimpleNamespace
 
 import pytest
-from phantom_robot.node import Phantom
+from phantom_robot.node import Phantom, Request
+from phantom_interfaces.srv import Command
+from rclpy.serialization import deserialize_message, serialize_message
+
+
+def test_http_defaults_survive_ros_serialization():
+    # Pydantic does not coerce omitted defaults; ROS doubles must be Python floats.
+    request=Command.Request(**Request().dict())
+    actual=deserialize_message(serialize_message(request),Command.Request)
+    assert actual.period_s==2.0 and actual.phase_deg==0.0
+    assert actual.pulse_width_ms==5.0 and actual.approach_speed_mm_s==5.0
+    assert list(actual.amplitude_mm)==[1.0,1.0] and list(actual.offset_mm)==[0.0,0.0]
 
 
 def coordinator():
