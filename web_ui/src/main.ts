@@ -91,6 +91,7 @@ let lastInputRejections = 0;
 let messageTimeout: ReturnType<typeof setTimeout>;
 const retiredStreams = new Set<string>();
 const plots = [0, 1].map(a => new PositionPlot($<HTMLCanvasElement>(`plot-${a}`)));
+const plotStartSequences = [0, 0];
 const pendingTargets = new Map<number, {
     operation: string;
     value: number;
@@ -315,8 +316,15 @@ function receive(s: State) {
     const now = performance.now(), time = s.timestamp_us / 1000;
     if (s.ui_instance && retiredStreams.has(s.ui_instance))
         return;
-    if (s.ui_instance === state?.ui_instance && (s.ui_sequence ?? 0) < (state?.ui_sequence ?? 0))
+    if (s.ui_instance === state?.ui_instance && (s.ui_sequence ?? 0) < (state?.ui_sequence ?? 0)) {
+        // Preserve delayed history without rolling live controls/status backwards.
+        if (s.connected && s.sample_count < lastSample && time <= latestFrameTime)
+            plots.forEach((plot, a) => {
+                if ((s.ui_sequence ?? 0) >= plotStartSequences[a] && s.control_mode?.[a] === state?.control_mode?.[a])
+                    plot.add(time, s.target_mm[a], s.position_mm[a]);
+            });
         return;
+    }
     if (state && s.ui_instance === state.ui_instance && s.input_rejections > lastInputRejections)
         message(`${s.input_topic} channel ${s.input_channel}: ${s.input_error}`, true);
     lastInputRejections = s.input_rejections;
@@ -324,7 +332,7 @@ function receive(s: State) {
     if (newStream)
         retiredStreams.add(state!.ui_instance!);
     if (newStream || s.sample_count < lastSample || time < latestFrameTime) {
-        plots.forEach(p => p.clear());
+        plots.forEach((p,a) => { p.clear(); plotStartSequences[a]=s.ui_sequence ?? 0; });
         clockOffset = Infinity;
     }
     if (s.connected && (newStream || s.sample_count !== lastSample)) {
@@ -332,8 +340,9 @@ function receive(s: State) {
         latestFrameTime = time;
         latestFresh = now;
         messageCount++;
-        plots.forEach((plot, a) => { if (state?.control_mode?.[a] !== s.control_mode?.[a])
-            plot.clear(); plot.add(time, s.target_mm[a], s.position_mm[a]); });
+        plots.forEach((plot, a) => { if (state?.control_mode?.[a] !== s.control_mode?.[a]) {
+            plot.clear(); plotStartSequences[a]=s.ui_sequence ?? 0;
+        } plot.add(time, s.target_mm[a], s.position_mm[a]); });
     }
     lastSample = s.sample_count;
     latestReceipt = now;

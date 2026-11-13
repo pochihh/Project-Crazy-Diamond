@@ -17,8 +17,16 @@ export class PositionPlot {
   clear() { this.points = []; }
 
   add(time: number, target: number, position: number) {
-    this.points.push({time,target,position});
-    while(this.points.length>600 || (this.points.length>1 && this.points[1].time<time-windowMs)) this.points.shift();
+    const newest = this.points.at(-1)?.time ?? time;
+    if(time<newest-windowMs) return;
+    const point={time,target,position};
+    if(time<=newest && this.points.length) {
+      // A fresh HTTP snapshot can overtake queued WebSocket samples.
+      const index=this.points.findIndex(p=>p.time>=time);
+      if(this.points[index].time===time) return;
+      this.points.splice(index,0,point);
+    } else this.points.push(point);
+    while(this.points.length>600 || (this.points.length>1 && this.points[1].time<Math.max(newest,time)-windowMs)) this.points.shift();
   }
 
   resize(ratio: number) {

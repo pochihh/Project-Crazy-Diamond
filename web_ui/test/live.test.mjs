@@ -72,6 +72,20 @@ test('horizontal spacing follows frame time and missing feedback leaves a gap',(
   plot.clear();plot.draw(1500);assert.equal(f.paths.at(-1).length,0);
 });
 
+test('delayed real samples fill a snapshot gap in timestamp order without duplicates',()=>{
+  const f=fakeCanvas(),plot=new PositionPlot(f.canvas);plot.resize(1);
+  plot.add(1000,1,1);plot.add(1020,1,1);
+  plot.add(1500,2,2); // HTTP fallback overtakes a paused WebSocket.
+  plot.draw(1500);assert.equal(f.paths.at(-1).at(-1)[0],'M');
+  for(let t=1040;t<1500;t+=20)plot.add(t,1,1);
+  plot.add(1500,2,2);plot.draw(1500);
+  const line=f.paths.at(-1);
+  assert.equal(line.length,26);
+  assert.equal(line.filter(p=>p[0]==='M').length,1);
+  assert.ok(line.every((p,i)=>!i||p[1]>line[i-1][1]));
+  plot.add(-9000,1,1);plot.draw(1500);assert.equal(f.paths.at(-1).length,26);
+});
+
 test('command errors and stalled connections do not leave the sender waiting forever',async()=>{
   const original=globalThis.fetch;
   try {

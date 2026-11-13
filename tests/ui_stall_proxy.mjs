@@ -10,6 +10,24 @@ new PerformanceObserver(list=>{for(const e of list.getEntries()){stats.longTasks
 for(const key of ['width','height']){const d=Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype,key);Object.defineProperty(HTMLCanvasElement.prototype,key,{...d,set(v){stats.canvasResizes++;d.set.call(this,v)}})}
 const NativeSocket=WebSocket;window.WebSocket=class extends NativeSocket{constructor(...args){super(...args);this.addEventListener('message',()=>{const now=performance.now();if(lastMessage)stats.maxMessageGapMs=Math.max(stats.maxMessageGapMs,now-lastMessage);lastMessage=now;stats.messages++})}};
 const originalFetch=window.fetch;window.fetch=async(...args)=>{const start=performance.now();const r=await originalFetch(...args);stats.requests++;stats.maxRequestMs=Math.max(stats.maxRequestMs,performance.now()-start);return r};
+const paths=new WeakMap();let gapStarted=0;
+for(const name of ['beginPath','moveTo','lineTo','stroke']){
+ const original=CanvasRenderingContext2D.prototype[name];
+ CanvasRenderingContext2D.prototype[name]=function(...args){
+  if(this.canvas.id==='plot-0'){
+   if(name==='beginPath')paths.set(this,{moves:0,lines:0});
+   const p=paths.get(this);
+   if(p&&name==='moveTo')p.moves++;
+   if(p&&name==='lineTo')p.lines++;
+   if(p&&name==='stroke'&&p.lines>10){
+    stats.plotGaps=Math.max(0,p.moves-1);
+    if(stats.plotGaps&&!gapStarted)gapStarted=performance.now();
+    if(!stats.plotGaps&&gapStarted){stats.plotRecoveries=(stats.plotRecoveries||0)+1;stats.maxGapRecoveryMs=Math.max(stats.maxGapRecoveryMs||0,performance.now()-gapStarted);gapStarted=0}
+   }
+  }
+  return original.apply(this,args);
+ };
+}
 addEventListener('DOMContentLoaded',()=>{let lastDOM=performance.now();new MutationObserver(()=>{const now=performance.now();stats.domUpdates++;stats.maxDOMGapMs=Math.max(stats.maxDOMGapMs,now-lastDOM);lastDOM=now}).observe(document.getElementById('position-0'),{childList:true,subtree:true,characterData:true});const out=document.createElement('pre');out.id='perf-report';out.style='position:fixed;right:4px;bottom:4px;z-index:1000;background:#fff;border:1px solid;padding:6px;font:10px monospace;pointer-events:none';document.body.append(out);setInterval(()=>out.textContent=JSON.stringify(stats,null,2),1000)});
 `;
 export default {
