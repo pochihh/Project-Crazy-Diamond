@@ -31,16 +31,20 @@ public:
     }
 };
 
+enum class PositionUnit : uint8_t { mm, deg, invalid };
+inline const char* unit_name(PositionUnit unit) {return unit==PositionUnit::deg?"deg":"mm";}
+
 struct Program;
 enum class Op { runner_load, runner_start, runner_stop, step_start, target, pwm, mode, axis, system, stop, zero, clear, clear_dsp, kp, ki, kd, limit, digital, analog, record, controller, profile };
 // Preserve existing numeric fault codes in recorded CSVs.
-enum class Error { none, busy, disabled_required, range, wrong_mode=5, position_unconfigured, not_ready=8, numeric=10, deadline, telemetry, dsp, realtime };
+enum class Error { none, busy, disabled_required, range, wrong_mode=5, position_unconfigured, not_ready=8, numeric=10, deadline, telemetry, dsp, realtime, wrong_unit };
 inline const char* error_text(Error e) {
     switch(e) {
     case Error::none: return "";
     case Error::busy: return "The runner owns this channel or another operation is pending";
     case Error::disabled_required: return "Disable this axis before changing mode, controller type, zero, or duty limit";
     case Error::range: return "Value is invalid or outside the protocol/controller output range";
+    case Error::wrong_unit: return "Position unit does not match the axis calibration";
     case Error::wrong_mode: return "Command does not match the selected control mode";
     case Error::position_unconfigured: return "Position control is not configured for this channel";
     case Error::not_ready: return "Stop and clear the host fault before enabling";
@@ -60,6 +64,7 @@ struct Command {
     const Program* program=nullptr;
     uint64_t record=0,stop_count=0;
     bool check_stop=false;
+    PositionUnit target_unit=PositionUnit::mm;
 };
 struct Sample {
     uint64_t stop_count=0,program_id=0,runner_rows=0,runner_row=0,runner_cycles=0;
@@ -73,6 +78,11 @@ struct Sample {
     std::array<double,6> pwm{}, scale{counts_per_mm,counts_per_mm}, minimum{-50,-50}, maximum{50,50};
     std::array<uint8_t,6> mode{0,0,1,1,1,1}; // 0: position, 1: direct normalized DSP duty.
     std::array<int32_t,6> zero{};
+    std::array<PositionUnit,6> unit{};
+    std::array<bool,6> reversed{};
+    double direction(unsigned a) const {return reversed[a]?-1.0:1.0;}
+    double raw_reference(unsigned a,double value) const {return zero[a]+direction(a)*value*scale[a];}
+    double joint_position(unsigned a) const {return position[a]*(unit[a]==PositionUnit::deg?kPi/180.0:0.001);}
     std::array<bool,6> selected{};
     std::array<bool,6> position_configured{true,true,false,false,false,false};
     std::array<Tuning,6> tuning{};
@@ -92,7 +102,7 @@ struct Sample {
 };
 inline bool valid_reference(const Sample& s,unsigned axis,double value) {
     // DSP reference telemetry is a signed 32-bit encoder count, not a travel limit.
-    const double counts=s.zero[axis]+value*s.scale[axis];
+    const double counts=s.raw_reference(axis,value);
     return std::isfinite(value)&&std::isfinite(counts)&&
         counts>=std::numeric_limits<int32_t>::min()&&counts<=std::numeric_limits<int32_t>::max();
 }
@@ -129,7 +139,7 @@ public:
         last_time_=t.timestamp_us;
         for(unsigned a=0;a<kAxes;a++) {
             state.position[a]=state.position_configured[a] ?
-                (static_cast<double>(t.position[a])-state.zero[a])/state.scale[a] : 0;
+                state.direction(a)*(static_cast<double>(t.position[a])-state.zero[a])/state.scale[a] : 0;
             state.tuning[a]=controllers[a].tuning();
             state.controllers[a]=controllers[a].config;
         }
@@ -188,6 +198,7 @@ private:
             if(c.op==Op::system){state.system=c.enabled;if(!c.enabled){state.digital_out=0;state.analog_out={0,0};}}else state.selected[a]=c.enabled;
             break;
         case Op::target:
+            if(c.target_unit!=state.unit[a]) {state.command_error=Error::wrong_unit;return;}
             if(!state.position_configured[a]) {state.command_error=Error::position_unconfigured;return;}
             if(state.mode[a]!=0) {state.command_error=Error::wrong_mode; return;}
             if(controllers[a].config.type==step_recorder_type && c.value!=0){state.command_error=Error::wrong_mode;return;}
@@ -254,16 +265,19 @@ public:
         for(unsigned a=0;a<kAxes;a++) {
             if(!enabled(a)) {controllers[a].reset(); continue;}
             if(state.mode[a]==1) {
-                result[a]=static_cast<float>(std::clamp(state.pwm[a],-controllers[a].limit,controllers[a].limit));
+                result[a]=static_cast<float>(state.direction(a)*std::clamp(state.pwm[a],-controllers[a].limit,controllers[a].limit));
                 continue;
             }
             const double output=controllers[a].step(state.target[a],state.position[a],state.scale[a],dt,injection[a]);
             frame.axes[a]=controllers[a].signals;
+            auto& trace=frame.axes[a];
+            const double sign=state.direction(a);
+            trace.p*=sign;trace.i*=sign;trace.d*=sign;trace.u*=sign;trace.injection*=sign;
             frame.axes[a].type=controllers[a].config.type;frame.axes[a].revision=state.controller_revision[a];
             frame.valid_mask|=1U<<a;
-            state.reference[a]=controllers[a].reference_mm;
+            state.reference[a]=controllers[a].reference;
             if(!std::isfinite(output)) {fail(Error::numeric);return {};}
-            result[a]=static_cast<float>(std::clamp(output,-controllers[a].limit,controllers[a].limit));
+            result[a]=static_cast<float>(sign*std::clamp(output,-controllers[a].limit,controllers[a].limit));
             frame.axes[a].plant=result[a];
             if(!std::isfinite(result[a])) {fail(Error::numeric); return {};}
         }

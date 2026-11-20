@@ -6,9 +6,9 @@
 #include <thread>
 using namespace diamond;
 int main() {
-    AxisController unshaped;unshaped.step(10,0,1,dt);assert(unshaped.reference_mm==10);
+    AxisController unshaped;unshaped.step(10,0,1,dt);assert(unshaped.reference==10);
     unshaped.config.slew_enabled=true;unshaped.reset();unshaped.step(10,0,1,dt);
-    assert(unshaped.reference_mm==20*dt);
+    assert(unshaped.reference==20*dt);
     // Large tracking errors remain valid controller inputs, including a stationary plant.
     Control research;research.receive({});
     research.apply({Op::axis,0,0,true});research.apply({Op::axis,1,0,true});research.apply({Op::system,0,0,true});
@@ -24,6 +24,26 @@ int main() {
         assert(output[0]==1&&output[1]==-1&&research.mask()==3&&research.state.fault==Error::none);
     }
     research.apply({Op::stop});assert(research.mask()==0);
+    // Reversing the coordinate frame must invert both sides of the feedback loop.
+    for(bool reversed:{false,true}) {
+        Control rotary;
+        rotary.state.unit[0]=PositionUnit::deg;rotary.state.reversed[0]=reversed;rotary.state.scale[0]=10;
+        const double sign=rotary.state.direction(0);
+        Telemetry encoder{};encoder.position[0]=400;rotary.receive(encoder);
+        encoder.position[0]+=static_cast<int>(90*sign);rotary.receive(encoder);
+        assert(rotary.state.position[0]==9 && rotary.state.raw_reference(0,9)==encoder.position[0]);
+        assert(std::abs(rotary.state.joint_position(0)-9*kPi/180)<1e-12);
+        rotary.apply({Op::zero});assert(rotary.state.position[0]==0);
+        rotary.apply({Op::axis,0,0,true});rotary.apply({Op::system,0,0,true});
+        Command target{Op::target,0,5};rotary.apply(target);assert(rotary.state.command_error==Error::wrong_unit);
+        target.target_unit=PositionUnit::deg;rotary.apply(target);
+        ControlFrame trace;const auto duty=rotary.duty(trace);
+        assert(duty[0]*sign<0 && trace.axes[0].error==50 && trace.axes[0].plant==duty[0]);
+        assert(std::abs(trace.axes[0].u-duty[0])<1e-6);
+        rotary.apply({Op::stop});rotary.apply({Op::mode,0,1});
+        rotary.apply({Op::axis,0,0,true});rotary.apply({Op::system,0,0,true});
+        rotary.apply({Op::pwm,0,.25});assert(rotary.duty()[0]==sign*.25);
+    }
     Control timing;timing.receive({});timing.apply({Op::axis,0,0,true});timing.apply({Op::system,0,0,true});
     timing.apply({Op::target,0,75});timing.apply({Op::digital,0,1});
     timing.deadline_missed(3,false);

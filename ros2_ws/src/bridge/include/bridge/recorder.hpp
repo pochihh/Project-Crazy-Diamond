@@ -14,14 +14,15 @@ struct Signal {
     std::function<double(const Sample&)> number;
     std::function<std::string(const Sample&)> text;
 };
-inline std::vector<Signal> signal_catalog() {
+inline std::vector<Signal> signal_catalog(const std::array<PositionUnit,6>& units={}) {
     std::vector<Signal> out;
     auto add=[&](std::string name,std::string unit,std::string group,auto fn){out.push_back({name,unit,group,fn,{}});};
     for(unsigned a=0;a<6;a++) {
         const auto prefix="axis"+std::to_string(a)+"_",group="Axis "+std::to_string(a);
-        add(prefix+"target_mm","mm",group,[a](const Sample& s){return s.target[a];});
-        add(prefix+"reference_mm","mm",group,[a](const Sample& s){return s.reference[a];});
-        add(prefix+"position_mm","mm",group,[a](const Sample& s){return s.position[a];});
+        const std::string unit=unit_name(units[a]);
+        add(prefix+"target_"+unit,unit,group,[a](const Sample& s){return s.target[a];});
+        add(prefix+"reference_"+unit,unit,group,[a](const Sample& s){return s.reference[a];});
+        add(prefix+"position_"+unit,unit,group,[a](const Sample& s){return s.position[a];});
         add(prefix+"raw_counts","count",group,[a](const Sample& s){return s.telemetry.position[a];});
         add(prefix+"zero_counts","count",group,[a](const Sample& s){return s.zero[a];});
         add(prefix+"requested_duty","duty",group,[a](const Sample& s){return s.telemetry.requested_duty[a];});
@@ -36,7 +37,7 @@ inline std::vector<Signal> signal_catalog() {
         add(prefix+"mode","enum",group,[a](const Sample& s){return s.mode[a];});
         add(prefix+"pwm_target","duty",group,[a](const Sample& s){return s.pwm[a];});
         add(prefix+"slew_enabled","bool",group,[a](const Sample& s){return s.controllers[a].slew_enabled;});
-        add(prefix+"slew_rate_mm_s","mm/s",group,[a](const Sample& s){return s.controllers[a].slew_rate_mm_s;});
+        add(prefix+"slew_rate_"+unit+"_s",unit+"/s",group,[a](const Sample& s){return s.controllers[a].slew_rate_per_s;});
         out.push_back({prefix+"controller_type","text",group,{},[a](const Sample& s){return std::string(controller_types[s.controllers[a].type].id);}});
         out.push_back({prefix+"controller_profile","text",group,{},[a](const Sample& s){return std::string(s.profiles[a].data());}});
         out.push_back({prefix+"controller_parameters","text",group,{},[a](const Sample& s){
@@ -100,18 +101,19 @@ inline std::vector<Signal> signal_catalog() {
 #undef PCD_SIGNAL
     for(unsigned a=0;a<6;a++) {
         const auto prefix="axis"+std::to_string(a)+"_",group="Axis "+std::to_string(a);
+        const std::string unit=unit_name(units[a]);
         add(prefix+"ack_sent_duty","duty",group,[a](const Sample& s){return s.acknowledged.sent_duty[a];});
         add(prefix+"ctrl_valid","bool",group,[a](const Sample& s){return (s.acknowledged.valid_mask>>a)&1;});
         add(prefix+"ctrl_revision","count",group,[a](const Sample& s){return s.acknowledged.axes[a].revision;});
         out.push_back({prefix+"ctrl_type","text",group,{},[a](const Sample& s){
             return s.acknowledged.valid_mask&(1U<<a)?std::string(controller_types[s.acknowledged.axes[a].type].id):std::string{};
         }});
-        auto trace=[&](const char* name,const char* unit,double ControllerSignals::*member) {
+        auto trace=[&](const std::string& name,const std::string& unit,double ControllerSignals::*member) {
             add(prefix+name,unit,group,[a,member](const Sample& s){return s.acknowledged.axes[a].*member;});
         };
         trace("ctrl_kp","duty/count",&ControllerSignals::kp);
-        trace("ctrl_r_mm","mm",&ControllerSignals::r);
-        trace("ctrl_y_mm","mm",&ControllerSignals::y);
+        trace("ctrl_r_"+unit,unit,&ControllerSignals::r);
+        trace("ctrl_y_"+unit,unit,&ControllerSignals::y);
         trace("ctrl_error_counts","count",&ControllerSignals::error);
         trace("ctrl_p_duty","duty",&ControllerSignals::p);
         trace("ctrl_i_duty","duty",&ControllerSignals::i);
@@ -130,11 +132,11 @@ class Recorder {
     uint64_t step_command_=0,last_active_tick_=0;
     std::vector<size_t> columns_;
 public:
-    const std::vector<Signal> catalog=signal_catalog();
+    const std::vector<Signal> catalog;
     std::string filename,error;
     uint64_t samples=0;
     std::vector<std::string> selected;
-    explicit Recorder(std::filesystem::path directory):directory_(std::move(directory)){}
+    explicit Recorder(std::filesystem::path directory,const std::array<PositionUnit,6>& units={}):directory_(std::move(directory)),catalog(signal_catalog(units)){}
     bool active() const {return file_.is_open();}
     uint64_t id() const {return id_;}
     void start(uint64_t id,const std::vector<std::string>& names,const Sample& s,const std::string& project,uint64_t step_command=0) {
@@ -156,9 +158,9 @@ public:
         columns_=std::move(columns);selected.clear();for(auto i:columns_)selected.push_back(catalog[i].name);
         id_=id;restarts_=s.dsp_restarts;samples=0;last_=0;started_=false;step_command_=step_command;last_active_tick_=0;error.clear();
         file_<<std::setprecision(17)<<"# project="<<project<<"; period_s="<<dt<<"; timezone="<<std::put_time(&local,"%z")<<"\n";
-        for(unsigned a=0;a<6;a++)file_<<"# axis"<<a<<" counts_per_mm="<<s.scale[a]<<"; zero_counts="<<s.zero[a]
-            <<"; min_mm="<<s.minimum[a]<<"; max_mm="<<s.maximum[a]<<"; profile="<<s.profiles[a].data()
-            <<"; slew="<<s.controllers[a].slew_enabled<<"; rate_mm_s="<<s.controllers[a].slew_rate_mm_s<<'\n';
+        for(unsigned a=0;a<6;a++)file_<<"# axis"<<a<<" counts_per_"<<unit_name(s.unit[a])<<"="<<s.scale[a]<<"; zero_counts="<<s.zero[a]
+            <<"; reverse_direction="<<s.reversed[a]<<"; min_"<<unit_name(s.unit[a])<<"="<<s.minimum[a]<<"; max_"<<unit_name(s.unit[a])<<"="<<s.maximum[a]<<"; profile="<<s.profiles[a].data()
+            <<"; slew="<<s.controllers[a].slew_enabled<<"; rate_"<<unit_name(s.unit[a])<<"_s="<<s.controllers[a].slew_rate_per_s<<'\n';
         file_<<"timestamp_us,sample";for(auto i:columns_)file_<<','<<catalog[i].name;file_<<'\n';
         if(!file_){finish();throw std::runtime_error("Cannot write recording header");}
     }

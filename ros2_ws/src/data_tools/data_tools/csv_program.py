@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 COMMANDS = {**{f'axis{a}_reference_mm': a for a in range(6)},
+            **{f'axis{a}_reference_deg': 18+a for a in range(6)},
             **{f'axis{a}_duty': 6+a for a in range(6)},
             **{f'do{i}': 12+i for i in range(4)},
             **{f'ao{i}_raw': 16+i for i in range(2)}}
@@ -23,7 +24,7 @@ def parse_csv(content):
     channels = [c for _, c in recognized]
     if not channels:
         raise ValueError('No supported command columns')
-    if len(set(channels)) != len(channels) or any(a in channels and a+6 in channels for a in range(6)):
+    if len(set(channels)) != len(channels) or any(sum(c in channels for c in (a,a+6,a+18)) > 1 for a in range(6)):
         raise ValueError('Duplicate channel or both reference and duty for one axis')
     values = []
     for number, row in enumerate(rows, 1):
@@ -36,7 +37,7 @@ def parse_csv(content):
                 raise ValueError(f'Row {number}, {header[index]}: numeric value required') from None
             if not math.isfinite(value):
                 raise ValueError(f'Row {number}: non-finite value')
-            if channel >= 12 and (value != int(value) or not 0 <= value <= (1 if channel < 16 else 4095)):
+            if 12 <= channel < 18 and (value != int(value) or not 0 <= value <= (1 if channel < 16 else 4095)):
                 raise ValueError(f'Row {number}: invalid digital/analog output code')
             if 6 <= channel < 12 and abs(value) > 1:
                 raise ValueError(f'Row {number}: duty must be within -1..1')

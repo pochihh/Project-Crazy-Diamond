@@ -11,7 +11,7 @@ export function dataTools(){
     const history:PlotFrame[]=[];
     let recording=false;
     let catalog:Signal[]=[],busy=false,visible=false,ws:WebSocket|undefined,lastSequence=-1,lastTime=0,lastRobot='',recordKey='';
-    const selected=new Set(['axis0_reference_mm','axis0_position_mm','axis0_output_duty','axis1_reference_mm','axis1_position_mm','axis1_output_duty','do0']);
+    const selected=new Set<string>();
     const checks=new Map<string,HTMLInputElement>();
     const message=(text:string)=>{el('data-message').textContent=text;el('runner-message').textContent=text;};
     async function action(name:string,body:object){busy=true;try{const result=await dataRequest(name,body);message(result.warnings?.join('\n')||result.message||'Applied');return result;}catch(e){message(String(e));return undefined;}finally{busy=false;}}
@@ -51,6 +51,9 @@ export function dataTools(){
     async function signals() {
         const r=await fetch('/api/data/signals');const d=await r.json();
         if(!r.ok)throw Error(d.detail);
+        if(!catalog.length)for(const field of d.signals as Signal[]) {
+            if(/^(do0|axis[01]_((reference|position)_(mm|deg)|output_duty))$/.test(field.name))selected.add(field.name);
+        }
         catalog=d.signals; // Preview vectors use the complete catalog's indices.
         const list=el('signal-list'); list.replaceChildren();checks.clear();groupChecks.length=0;
         const groups=new Map<string,Signal[]>();
@@ -66,7 +69,7 @@ export function dataTools(){
             const label=document.createElement('label'), all=document.createElement('input');
             all.type='checkbox';label.append(all,title);legend.append(label);section.append(legend);
             const names=fields.map(f=>f.name);
-            const defaults=title.startsWith('Axis ') ? names.filter(n=>/_(target_mm|reference_mm|position_mm|requested_duty|output_duty)$/.test(n)) : names;
+            const defaults=title.startsWith('Axis ') ? names.filter(n=>/_((target|reference|position)_(mm|deg)|requested_duty|output_duty)$/.test(n)) : names;
             groupChecks.push({input:all,names:defaults});
             all.title=title.startsWith('Axis ') ? 'Toggle target, reference, position and duty' : 'Toggle group';
             all.onchange=()=>{

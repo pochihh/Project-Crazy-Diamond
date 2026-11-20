@@ -6,6 +6,7 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Literal
 import threading
 import time
 import uuid
@@ -81,13 +82,16 @@ class RosClient(Node):
         self.state = dict(message_to_ordereddict(message), ui_sequence=self.sequence, ui_instance=self.instance)
         self.received = time.monotonic()
 
-    def publish_input(self, operation, channel, value):
+    def publish_input(self, operation, channel, value, unit="mm"):
         publisher, message_type, channel_field, value_field = self.inputs[operation]
         if operation == 'digital':
             value = bool(value)
         elif operation == 'analog':
             value = int(value)
-        publisher.publish(message_type(**{channel_field: channel, value_field: value}))
+        if operation=='target':
+            publisher.publish(message_type(axis=channel, position=value, unit=unit))
+        else:
+            publisher.publish(message_type(**{channel_field: channel, value_field: value}))
 
     def snapshot(self):
         state = self.state.copy()
@@ -100,12 +104,14 @@ class RosClient(Node):
 
 class Request(BaseModel):
     operation: str
+    unit: Literal['mm','deg'] = 'mm'
     axis: int = Field(default=0, ge=0, le=5)
     value: float = 0.0
     enabled: bool = False
     set_reference: bool = False
     slew_enabled: bool = False
     slew_rate_mm_s: float = 20.0
+    slew_rate_per_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     controller_type: str = ''
     profile: str = ''
     parameters: dict[str, float] = Field(default_factory=dict)
@@ -233,7 +239,7 @@ def create_app(ros, recordings: Path, static: Path, project=None):
             if body.operation in ('digital', 'analog') and (body.value != int(body.value) or
                     not 0 <= body.value <= (1 if body.operation == 'digital' else 4095)):
                 raise HTTPException(422, 'Invalid output code')
-            ros.publish_input(body.operation, body.axis, body.value)
+            ros.publish_input(body.operation, body.axis, body.value, body.unit)
             return {'published': True, 'state': ros.snapshot()}
         client = ros.dsp_client if body.operation in ('dsp_clear', 'dsp_disarm') else ros.client
         if not client.service_is_ready():
@@ -252,6 +258,8 @@ def create_app(ros, recordings: Path, static: Path, project=None):
                 request.controller_revision = body.controller_revision
                 request.set_reference = body.set_reference
                 request.slew_enabled, request.slew_rate_mm_s = body.slew_enabled, body.slew_rate_mm_s
+                if body.slew_rate_per_s is not None:
+                    request.slew_rate_per_s = body.slew_rate_per_s
             future = client.call_async(request)
             deadline = time.monotonic() + 3
             while not future.done():
@@ -278,7 +286,8 @@ def create_app(ros, recordings: Path, static: Path, project=None):
                 if body.operation == 'controller_apply':
                     matches = actual['type'] == body.controller_type and parameters == body.parameters
                     if body.set_reference:
-                        matches = matches and actual['slew_enabled'] == body.slew_enabled and actual['slew_rate_mm_s'] == body.slew_rate_mm_s
+                        rate_key = 'slew_rate_per_s' if body.slew_rate_per_s is not None else 'slew_rate_mm_s'
+                        matches = matches and actual['slew_enabled'] == body.slew_enabled and actual[rate_key] == getattr(body, rate_key)
                 elif body.operation in ('kp', 'ki', 'kd'):
                     matches = parameters.get(body.operation) == body.value
                 elif body.operation == 'limit':

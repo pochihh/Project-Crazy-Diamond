@@ -26,7 +26,7 @@ public:
         if(!valid_controller(c))throw std::runtime_error("Controller parameters are non-finite or out of range");
         return c;
     }
-    Profile load(const std::string& id) const {
+    Profile load(const std::string& id,bool rotary=false) const {
         const auto node=YAML::LoadFile(path(id).string());
         if(!node.IsMap())throw std::runtime_error("Profile must be a mapping");
         for(const auto& entry:node) {
@@ -47,9 +47,12 @@ public:
         const auto reference=node["reference"];
         const auto kind=reference["type"].as<std::string>();
         if(kind!="passthrough"&&kind!="slew_limit")throw std::runtime_error("Unknown reference processing type");
-        for(const auto& entry:reference)if(entry.first.as<std::string>()!="type"&&entry.first.as<std::string>()!="max_rate_mm_s")throw std::runtime_error("Unknown reference parameter");
+        for(const auto& entry:reference)if(entry.first.as<std::string>()!="type"&&entry.first.as<std::string>()!="max_rate_mm_s"&&entry.first.as<std::string>()!="max_rate_per_s")throw std::runtime_error("Unknown reference parameter");
         c.slew_enabled=kind=="slew_limit";
-        c.slew_rate_mm_s=reference["max_rate_mm_s"] ? reference["max_rate_mm_s"].as<double>() : 20;
+        const auto legacy=reference["max_rate_mm_s"],native=reference["max_rate_per_s"];
+        if(native && legacy)throw std::runtime_error("Specify one reference rate");
+        if(rotary && legacy && c.slew_enabled)throw std::runtime_error("Use max_rate_per_s in degrees/s for a rotary slew profile");
+        c.slew_rate_per_s=native?native.as<double>():legacy?legacy.as<double>():20;
         if(!valid_controller(c))throw std::runtime_error("Invalid reference rate");
         return {profile_id(id),c};
     }
@@ -66,7 +69,7 @@ public:
         YAML::Node node;node["schema_version"]=2;node["id"]=id;node["type"]=controller_types[c.type].id;
         node["sample_period_s"]=1.0/kRateHz;
         node["reference"]["type"]=c.slew_enabled?"slew_limit":"passthrough";
-        node["reference"]["max_rate_mm_s"]=c.slew_rate_mm_s;
+        node["reference"]["max_rate_per_s"]=c.slew_rate_per_s;
         for(unsigned i=0;i<controller_types[c.type].count;i++)node["parameters"][controller_types[c.type].parameters[i].name]=c.parameters[i];
         const auto temporary=destination.string()+"."+std::to_string(getpid())+".tmp";
         try {

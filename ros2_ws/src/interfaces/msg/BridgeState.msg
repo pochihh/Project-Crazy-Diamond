@@ -9,6 +9,15 @@ ControllerProfile[6] controllers
 uint64[6] controller_revision
 uint8[6] control_mode
 float64[6] pwm_target
+string[6] position_unit
+bool[6] reverse_direction
+float64[6] counts_per_unit
+float64[6] minimum
+float64[6] maximum
+float64[6] position
+float64[6] target
+float64[6] reference
+# Legacy linear fields. Only valid for entries with position_unit == "mm".
 float64[6] counts_per_mm
 float64[6] minimum_mm
 float64[6] maximum_mm

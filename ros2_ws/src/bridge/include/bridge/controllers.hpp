@@ -21,11 +21,11 @@ constexpr uint8_t step_recorder_type=1;
 struct ControllerConfig {
     uint8_t type=0;
     bool slew_enabled=false;
-    double slew_rate_mm_s=20;
+    double slew_rate_per_s=20;
     std::array<double,max_controller_parameters> parameters{0.0005,0.001,0,0};
 };
 inline bool valid_controller(const ControllerConfig& c) {
-    if(c.type>=controller_types.size() || !std::isfinite(c.slew_rate_mm_s) || c.slew_rate_mm_s<=0)return false;
+    if(c.type>=controller_types.size() || !std::isfinite(c.slew_rate_per_s) || c.slew_rate_per_s<=0)return false;
     if(c.type==step_recorder_type && c.slew_enabled)return false;
     const auto& type=controller_types[c.type];
     for(unsigned i=0;i<c.parameters.size();i++) {
@@ -61,7 +61,7 @@ class AxisController {
 public:
     ControllerSignals signals{};
     ControllerConfig config{};
-    double sign=-1,limit=1,reference_mm=0;
+    double sign=-1,limit=1,reference=0;
     void reset(){have_reference_=false;std::visit([](auto& p){p.reset();},implementation_);}
     Tuning tuning() const {
         if(config.type==step_recorder_type)return {config.parameters[0],0,0,sign,limit,0};
@@ -77,12 +77,12 @@ public:
         config=next;
         if(auto* pid=std::get_if<PidController>(&implementation_))pid->retune(tuning(),running);
     }
-    double step(double target_mm,double position_mm,double counts_per_mm,double dt,double injection=0) {
-        if(!have_reference_){reference_mm=position_mm;have_reference_=true;}
-        reference_mm=config.slew_enabled ? reference_mm+std::clamp(target_mm-reference_mm,-config.slew_rate_mm_s*dt,config.slew_rate_mm_s*dt) : target_mm;
-        if(config.type==step_recorder_type)reference_mm=0;
-        const double error=(reference_mm-position_mm)*counts_per_mm;
-        signals={};signals.r=reference_mm;signals.y=position_mm;signals.error=error;
+    double step(double target,double position,double counts_per_unit,double dt,double injection=0) {
+        if(!have_reference_){reference=position;have_reference_=true;}
+        reference=config.slew_enabled ? reference+std::clamp(target-reference,-config.slew_rate_per_s*dt,config.slew_rate_per_s*dt) : target;
+        if(config.type==step_recorder_type)reference=0;
+        const double error=(reference-position)*counts_per_unit;
+        signals={};signals.r=reference;signals.y=position;signals.error=error;
         signals.kp=config.parameters[0];
         if(auto* step=std::get_if<StepRecorderController>(&implementation_))return step->step(signals,signals.kp,sign,limit,injection);
         auto& pid=std::get<PidController>(implementation_);

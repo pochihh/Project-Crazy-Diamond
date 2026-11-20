@@ -29,7 +29,13 @@ inline void validate_program(Program& p,const Sample& s) {
     if(p.channels.empty()||p.channels.size()>18||p.values.empty()||p.values.size()%p.channels.size()||p.values.size()>2'000'000)
         throw std::runtime_error("Program needs complete rows and at most 2,000,000 values");
     uint32_t seen=0;
-    for(auto c:p.channels) {
+    // Public channels 0–5 are mm, 18–23 are degrees. Resolve units once at load.
+    for(auto& c:p.channels) {
+        if(c<6 || (c>=18 && c<24)) {
+            const bool rotary=c>=18;
+            if(rotary)c-=18;
+            if((s.unit[c]==PositionUnit::deg)!=rotary)throw std::runtime_error("CSV reference unit does not match axis "+std::to_string(c));
+        }
         if(c>=18||(seen&(1U<<c)))throw std::runtime_error("Unknown or duplicate command channel");
         seen|=1U<<c;
         if(c<12){if(p.axes&(1U<<(c%6)))throw std::runtime_error("Reference and duty cannot control the same axis");p.axes|=1U<<(c%6);}

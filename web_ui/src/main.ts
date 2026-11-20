@@ -32,12 +32,14 @@ type State = ControllerState & DataState & {
     project_id: string;
     control_mode: number[];
     pwm_target: number[];
-    counts_per_mm: number[];
-    minimum_mm: number[];
-    maximum_mm: number[];
-    position_mm: number[];
-    target_mm: number[];
-    reference_mm: number[];
+    counts_per_unit: number[];
+    position_unit: ('mm'|'deg')[];
+    reverse_direction: boolean[];
+    minimum: number[];
+    maximum: number[];
+    position: number[];
+    target: number[];
+    reference: number[];
     zero_counts: number[];
     duty_limit: number[];
     fault: string;
@@ -98,6 +100,7 @@ const plotStartSequences: number[] = [];
 const pendingTargets = new Map<number, {
     operation: string;
     value: number;
+    unit?: 'mm'|'deg';
 }>();
 let sendingAxis = -1;
 const activeInputs = new Set<number>(), dirtyTargets = new Set<number>();
@@ -160,14 +163,14 @@ $('workspace').addEventListener('click', event => {
     if (details) details.open=!details.open;
 });
 disclosure('dsp-expand','dsp-details');
-function bounds(a: number) { return state?.control_mode?.[a] === 1 ? [-100 * (state.duty_limit[a] ?? 1), 100 * (state.duty_limit[a] ?? 1)] : [state?.minimum_mm?.[a] ?? -50, state?.maximum_mm?.[a] ?? 50]; }
+function bounds(a: number) { return state?.control_mode?.[a] === 1 ? [-100 * (state.duty_limit[a] ?? 1), 100 * (state.duty_limit[a] ?? 1)] : [state?.minimum?.[a] ?? -50, state?.maximum?.[a] ?? 50]; }
 async function flushTargets() { if (sendingAxis >= 0)
     return; try {
     while (pendingTargets.size) {
         const [a, t] = pendingTargets.entries().next().value!;
         pendingTargets.delete(a);
         sendingAxis = a;
-        await command(t.operation, a, t.value);
+        await command(t.operation, a, t.value, false, {unit:t.unit});
     }
 }
 catch (e) {
@@ -181,7 +184,7 @@ function target(a: number, value: number) { const [minimum, maximum] = bounds(a)
     message(pwm ? `Duty must be between ${minimum} and ${maximum}.` : 'Position must be finite.', true);
     return;
 } inputValue(`target-${a}`, value.toFixed(1)); const slider = $<HTMLInputElement>(`slider-${a}`); if (Number(slider.value) !== value)
-    slider.value = String(value); dirtyTargets.delete(a); pendingTargets.set(a, { operation: pwm ? 'pwm' : 'target', value: pwm ? value / 100 : value }); void flushTargets(); }
+    slider.value = String(value); dirtyTargets.delete(a); pendingTargets.set(a, { operation: pwm ? 'pwm' : 'target', value: pwm ? value / 100 : value, unit: state?.position_unit[a] }); void flushTargets(); }
 const dirtyAnalog = new Set<number>();
 for (let i=0;i<4;i++) $<HTMLInputElement>(`do-set-${i}`).onchange=e=>void act('digital',i,(e.target as HTMLInputElement).checked?1:0);
 for (let i=0;i<2;i++) {
@@ -249,9 +252,12 @@ function render(s: State) {
     }
     for (let a = 0; a < plots.length; a++) {
         const enabled = !!s.system_enabled && !!s.axis_enabled?.[a] && !s.fault, pwm = s.control_mode?.[a] === 1;
+        const unit=s.position_unit[a];
+        text(`position-unit-${a}`,unit);
+        plots[a].unit=unit;
         const fixedZero = !pwm && s.controllers?.[a]?.type==='step_recorder';
         const owned = (s.runner_state === 1 || s.runner_state === 2) && !!(s.runner_axis_mask & (1 << a));
-        const pos = s.position_mm?.[a] ?? 0, t = pwm ? (s.pwm_target?.[a] ?? 0) * 100 : s.target_mm?.[a] ?? 0;
+        const pos = s.position?.[a] ?? 0, t = pwm ? (s.pwm_target?.[a] ?? 0) * 100 : s.target?.[a] ?? 0;
         text(`position-${a}`, live ? pos.toFixed(2) : '—');
         text(`axis-status-${a}`, enabled ? (pwm ? 'PWM OUTPUT' : 'HOLD / TRACK') : 'DISABLED');
         $(`axis-status-${a}`).classList.toggle('on', enabled);
@@ -269,29 +275,31 @@ function render(s: State) {
             input.disabled = !live || owned || fixedZero;
             if(pwm || id.startsWith('slider-')) { input.min = String(minimum); input.max = String(maximum); }
             else { input.removeAttribute('min'); input.removeAttribute('max'); }
-            input.setAttribute('aria-label', `Axis ${a} target ${pwm ? 'duty percent' : 'position mm'}`);
+            input.setAttribute('aria-label', `Axis ${a} target ${pwm ? 'duty percent' : `position ${unit}`}`);
         }
         $<HTMLButtonElement>(`apply-${a}`).disabled = !live || owned || fixedZero;
-        text(`target-label-${a}`, pwm ? 'Duty / %' : 'Target / mm');
+        text(`target-label-${a}`, pwm ? 'Duty / %' : `Target / ${unit}`);
         for (let i = 0; i < 5; i++) {
             const value = Number((minimum + (maximum - minimum) * i / 4).toFixed(2));
-            text(`ruler-${a}-${i}`, `${i === 4 && value > 0 ? '+' : ''}${value}${i === 4 ? (pwm ? ' %' : ' mm') : ''}`);
+            text(`ruler-${a}-${i}`, `${i === 4 && value > 0 ? '+' : ''}${value}${i === 4 ? (pwm ? ' %' : ' '+unit) : ''}`);
         }
         const marker = $(`marker-${a}`);
-        const actual = pwm ? 100 * (s.dsp.duty?.[a] ?? 0) : pos;
+        const dspDuty=100*(s.dsp.duty?.[a] ?? 0);
+        const axisDuty=s.reverse_direction[a]?-dspDuty:dspDuty;
+        const actual = pwm ? axisDuty : pos;
         marker.hidden = !live;
-        marker.title = pwm ? 'Reported output duty' : 'Measured position';
+        marker.title = pwm ? 'DSP output duty in the configured axis direction' : 'Measured position';
         marker.style.left = `${Math.max(0, Math.min(100, (actual - minimum) / (maximum - minimum) * 100))}%`;
         if (!activeInputs.has(a) && !pendingTargets.has(a) && sendingAxis !== a) {
             inputValue(`slider-${a}`, String(t));
             if (document.activeElement !== $(`target-${a}`) && !dirtyTargets.has(a))
                 inputValue(`target-${a}`, t.toFixed(1));
         }
-        const duty = 100 * (s.dsp.duty?.[a] ?? 0);
+        const duty = dspDuty;
         setMeter(`duty-meter-${a}`, live ? Math.abs(duty) : null, live ? `${duty.toFixed(1)}%` : '—');
         text(`error-label-${a}`, pwm ? 'Duty error' : 'Error');
-        text(`error-${a}`, live ? (pwm ? `${(t-duty).toFixed(1)}%` : `${(t - pos).toFixed(2)} mm`) : '—');
-        text(`target-read-${a}`, live ? t.toFixed(2) + (pwm ? '%' : ' mm') : '—');
+        text(`error-${a}`, live ? (pwm ? `${(t-axisDuty).toFixed(1)}%` : `${(t - pos).toFixed(2)} ${unit}`) : '—');
+        text(`target-read-${a}`, live ? t.toFixed(2) + (pwm ? '%' : ' '+unit) : '—');
         $(`target-legend-${a}`).hidden = pwm;
         plots[a].showTarget = !pwm;
 
@@ -343,7 +351,8 @@ function renderResources(s: State, live: boolean) {
     rows.replaceChildren();
     for (let a = 0; a < plots.length; a++) {
         const meta = project.axes[a], tr = document.createElement('tr'), enabled = s.system_enabled && s.axis_enabled[a] && !s.fault;
-        tr.innerHTML = `<td>${escape(meta.name)}<small>DSP 00 / channel ${a}</small></td><td>${escape(meta.motor ?? `DC motor ${a}`)}<small>${escape(meta.encoder ?? `eQEP${a + 1}`)}</small></td><td>${(s.counts_per_mm?.[a] ?? 321.8467).toFixed(3)} counts/mm<small>${s.minimum_mm?.[a] ?? -50} … ${s.maximum_mm?.[a] ?? 50} mm</small></td><td>${live ? s.position_mm[a].toFixed(3) : '—'} mm<small>${live ? s.dsp.position[a] : '—'} counts</small></td><td>${meter(`resource-duty-${a}`, 'Output duty')}</td><td><span class="badge ${enabled ? 'on' : ''}">${enabled ? 'ENABLED' : 'DISABLED'}</span><small>${s.control_mode?.[a] === 1 ? 'PWM' : 'Position'}</small></td>`;
+        const unit=s.position_unit[a];
+        tr.innerHTML = `<td>${escape(meta.name)}<small>DSP 00 / channel ${a}</small></td><td>${escape(meta.motor ?? `DC motor ${a}`)}<small>${escape(meta.encoder ?? `eQEP${a + 1}`)}</small></td><td>${(s.counts_per_unit?.[a] ?? 321.8467).toFixed(3)} counts/${unit}<small>${s.minimum?.[a] ?? -50} … ${s.maximum?.[a] ?? 50} ${unit} · ${s.reverse_direction[a]?'reversed':'normal'}</small></td><td>${live ? s.position[a].toFixed(3) : '—'} ${unit}<small>${live ? s.dsp.position[a] : '—'} counts</small></td><td>${meter(`resource-duty-${a}`, 'Output duty')}</td><td><span class="badge ${enabled ? 'on' : ''}">${enabled ? 'ENABLED' : 'DISABLED'}</span><small>${s.control_mode?.[a] === 1 ? 'PWM' : 'Position'}</small></td>`;
         rows.append(tr);
         const duty = s.dsp.duty[a] * 100;
         setMeter(`resource-duty-${a}`, live ? Math.abs(duty) : null, live ? `${duty.toFixed(1)}%` : '—');
@@ -374,7 +383,7 @@ function receive(s: State) {
         if (s.connected && s.sample_count < lastSample && time <= latestFrameTime)
             plots.forEach((plot, a) => {
                 if ((s.ui_sequence ?? 0) >= plotStartSequences[a] && s.control_mode?.[a] === state?.control_mode?.[a])
-                    plot.add(time, s.target_mm[a], s.position_mm[a]);
+                    plot.add(time, s.target[a], s.position[a]);
             });
         return;
     }
@@ -395,7 +404,7 @@ function receive(s: State) {
         messageCount++;
         plots.forEach((plot, a) => { if (state?.control_mode?.[a] !== s.control_mode?.[a]) {
             plot.clear(); plotStartSequences[a]=s.ui_sequence ?? 0;
-        } plot.add(time, s.target_mm[a], s.position_mm[a]); });
+        } plot.add(time, s.target[a], s.position[a]); });
     }
     lastSample = s.sample_count;
     latestReceipt = now;
@@ -406,7 +415,7 @@ async function refreshSnapshot() { snapshotPending = true; lastSnapshotRequest =
     const r = await fetch('/api/state', { signal: controller.signal, cache: 'no-store' });
     if (r.ok) {
         const s = await r.json();
-        if (s.position_mm)
+        if (s.position)
             receive(s);
     }
 }
@@ -617,7 +626,7 @@ catch {
 } }
 function connect() { clearTimeout(reconnectTimer); const old = socket; socket = undefined; old?.close(); socketConnected = false; const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?hz=${settings.streamHz}`); socket = ws; ws.onopen = () => { if (socket === ws)
     socketConnected = true; }; ws.onmessage = event => { if (socket !== ws)
-    return; const data = JSON.parse(event.data); if (data.position_mm)
+    return; const data = JSON.parse(event.data); if (data.position)
     receive(data); }; ws.onclose = () => { if (socket !== ws)
     return; socketConnected = false; dirtyState = true; reconnectTimer = setTimeout(connect, 1500); }; ws.onerror = () => ws.close(); }
 const observer = new ResizeObserver(resizePlots);

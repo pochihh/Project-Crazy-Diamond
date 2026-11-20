@@ -3,6 +3,7 @@ const windowMs = 10_000;
 
 export class PositionPlot {
   showTarget=true;
+  unit='mm';
   colors={ink:'#272a26',grid:'#d4d3c4',text:'#6f7168',measured:'#355f42',font:'11px monospace'};
   private points: Point[] = [];
   private width = 0;
@@ -51,7 +52,7 @@ export class PositionPlot {
     const y=(v:number)=>h/2-v/extent*(h/2-12);
     ctx.strokeStyle=this.colors.grid;ctx.lineWidth=1;ctx.setLineDash([]);
     for(let i=0;i<5;i++){ctx.beginPath();ctx.moveTo(0,12+i*(h-24)/4);ctx.lineTo(w,12+i*(h-24)/4);ctx.stroke();}
-    ctx.fillStyle=this.colors.text;ctx.font=this.colors.font;ctx.fillText(`${extent.toFixed(1)} mm`,4,10);
+    ctx.fillStyle=this.colors.text;ctx.font=this.colors.font;ctx.fillText(`${extent.toFixed(1)} ${this.unit}`,4,10);
     for(const [field,color] of [['target',this.colors.ink],['position',this.colors.measured]] as const) {
       if(field==='target'&&!this.showTarget) continue;
       ctx.strokeStyle=color;ctx.lineWidth=field==='position'?2:1;ctx.setLineDash(field==='target'?[5,4]:[]);ctx.beginPath();

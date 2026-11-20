@@ -7,9 +7,9 @@ type Style = {text: string; grid: string; font: string; dark: boolean};
 
 export function traceHue(name: string) {
     // Space the common position, reference and duty channels around the wheel.
-    const axis = /^axis(\d+)_(position_mm|reference_mm|output_duty)$/.exec(name);
+    const axis = /^axis(\d+)_(position_(?:mm|deg)|reference_(?:mm|deg)|output_duty)$/.exec(name);
     if (axis) {
-        const base = axis[2]==='position_mm' ? 213 : axis[2]==='reference_mm' ? 8 : 111;
+        const base = axis[2].startsWith('position_') ? 213 : axis[2].startsWith('reference_') ? 8 : 111;
         return (Number(axis[1])*137 + base) % 360;
     }
     let hash = 0;

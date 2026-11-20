@@ -45,15 +45,22 @@ public:
         device_=declare_parameter("spi_device",std::string("/dev/spidev0.0"));
         directory_=declare_parameter("recording_directory",std::string("recordings"));
         profiles_=std::make_unique<Profiles>(declare_parameter("controller_directory",std::string("projects/")+DIAMOND_PROJECT_ID+"/controllers"));
+        rcl_interfaces::msg::ParameterDescriptor startup;
+        startup.read_only=true;
         for(unsigned a=0;a<kAxes;a++) {
             const auto key="axis"+std::to_string(a)+".";
             auto& controller=core_.controllers[a];
             const bool position=declare_parameter(key+"position_control",a<2);
             core_.state.position_configured[a]=position;
             core_.state.mode[a]=position?0:1;
-            core_.state.scale[a]=declare_parameter(key+"counts_per_mm",counts_per_mm);
-            core_.state.minimum[a]=declare_parameter(key+"minimum_mm",-50.0);
-            core_.state.maximum[a]=declare_parameter(key+"maximum_mm",50.0);
+            const auto unit=declare_parameter(key+"position_unit",std::string("mm"),startup);
+            if(unit!="mm" && unit!="deg")throw std::runtime_error(key+"position_unit must be mm or deg");
+            const bool rotary=unit=="deg";
+            core_.state.unit[a]=rotary?PositionUnit::deg:PositionUnit::mm;
+            core_.state.reversed[a]=declare_parameter(key+"reverse_direction",false,startup);
+            core_.state.scale[a]=declare_parameter(key+"counts_per_"+unit,rotary?0.0:counts_per_mm,startup);
+            core_.state.minimum[a]=declare_parameter(key+"minimum_"+unit,rotary?-180.0:-50.0,startup);
+            core_.state.maximum[a]=declare_parameter(key+"maximum_"+unit,rotary?180.0:50.0,startup);
             if(position && (!std::isfinite(core_.state.scale[a]) || core_.state.scale[a]<=0 ||
                !std::isfinite(core_.state.minimum[a]) || !std::isfinite(core_.state.maximum[a]) ||
                core_.state.minimum[a]>=core_.state.maximum[a] || core_.state.minimum[a]>0 || core_.state.maximum[a]<0))
@@ -65,13 +72,13 @@ public:
                 throw std::runtime_error("Invalid axis tuning");
             const auto profile_name=declare_parameter(key+"controller_profile",position?std::string("bench_pid"):std::string{});
             if(position) {
-                const auto profile=profiles_->load(profile_name);
+                const auto profile=profiles_->load(profile_name,rotary);
                 controller.configure(profile.controller,false);
                 core_.state.profiles[a]=profile.id;
             }
         }
         fs::create_directories(directory_);
-        recorder_=std::make_unique<Recorder>(directory_);
+        recorder_=std::make_unique<Recorder>(directory_,core_.state.unit);
         diagnostics_.open(fs::path(directory_)/"realtime-events.jsonl",std::ios::app);
         if(!diagnostics_)throw std::runtime_error("Cannot open real-time event log");
         publisher_=create_publisher<interfaces::msg::BridgeState>("/bridge/state",rclcpp::QoS(1).reliable());
@@ -80,7 +87,9 @@ public:
         // then coalesced per channel in an allocation-free mailbox.
         const auto input_qos=rclcpp::QoS(16).reliable().durability_volatile();
         target_sub_=create_subscription<interfaces::msg::PositionCommand>("/bridge/target",input_qos,
-            [this](const interfaces::msg::PositionCommand& m){input(Op::target,m.axis,m.position_mm);});
+            [this](const interfaces::msg::PositionCommand& m){const auto unit=m.unit.empty() || m.unit=="mm"?PositionUnit::mm:
+                    m.unit=="deg"?PositionUnit::deg:PositionUnit::invalid;
+                input(Op::target,m.axis,m.unit.empty()?m.position_mm:m.position,unit);});
         duty_sub_=create_subscription<interfaces::msg::DutyCommand>("/dsp/duty",input_qos,
             [this](const interfaces::msg::DutyCommand& m){input(Op::pwm,m.axis,m.duty);});
         digital_sub_=create_subscription<interfaces::msg::DigitalCommand>("/dsp/digital_out",input_qos,
@@ -173,7 +182,7 @@ private:
 
     static interfaces::msg::ControllerProfile profile_message(const ProfileId& id,const ControllerConfig& config) {
         interfaces::msg::ControllerProfile msg;const auto& type=controller_types[config.type];
-        msg.id=id.data();msg.type=type.id;msg.slew_enabled=config.slew_enabled;msg.slew_rate_mm_s=config.slew_rate_mm_s;
+        msg.id=id.data();msg.type=type.id;msg.slew_enabled=config.slew_enabled;msg.slew_rate_mm_s=msg.slew_rate_per_s=config.slew_rate_per_s;
         for(unsigned i=0;i<type.count;i++) {msg.parameter_names.push_back(type.parameters[i].name);msg.parameter_values.push_back(config.parameters[i]);}
         return msg;
     }
@@ -194,8 +203,8 @@ private:
         } catch(const std::exception& e){out.errors.push_back(e.what());}
     }
 
-    void input(Op op,unsigned channel,double value) {
-        Command c{op,channel,value};c.order=++next_order_;inputs_.publish(c);
+    void input(Op op,unsigned channel,double value,PositionUnit unit=PositionUnit::mm) {
+        Command c{op,channel,value};c.target_unit=unit;c.order=++next_order_;inputs_.publish(c);
     }
     template<class Response> void enqueue(Command c,Response& out) {
         c.id=next_command_+1;c.order=++next_order_;
@@ -231,11 +240,14 @@ private:
                 if(op=="controller_apply") {
                     c.op=Op::controller;c.controller=Profiles::parameters(req.controller_type,req.parameter_names,req.parameter_values);
                     c.controller.slew_enabled=req.set_reference?req.slew_enabled:(c.controller.type!=step_recorder_type && latest_.controllers[c.axis].slew_enabled);
-                    c.controller.slew_rate_mm_s=req.set_reference?req.slew_rate_mm_s:latest_.controllers[c.axis].slew_rate_mm_s;
+                    if(req.set_reference && req.slew_rate_per_s==-1 && latest_.unit[c.axis]==PositionUnit::deg)
+                        throw std::runtime_error("Specify slew_rate_per_s for a rotary axis");
+                    const double rate=req.slew_rate_per_s==-1?req.slew_rate_mm_s:req.slew_rate_per_s;
+                    c.controller.slew_rate_per_s=req.set_reference?rate:latest_.controllers[c.axis].slew_rate_per_s;
                     if(!valid_controller(c.controller))throw std::runtime_error("Invalid reference processing parameters");
                 } else if(op=="profile_load") {
                     // shortcut: startup assignment stays in bridge.yaml until project configuration editing is added.
-                    const auto profile=profiles_->load(req.profile);
+                    const auto profile=profiles_->load(req.profile,latest_.unit[c.axis]==PositionUnit::deg);
                     c.op=Op::controller;c.controller=profile.controller;c.profile=profile.id;
                 } else {
                     if(latest_.command_id!=next_command_||req.controller_revision!=latest_.controller_revision[c.axis]) {
@@ -275,9 +287,10 @@ private:
         const auto prefix="axis"+std::to_string(axis)+"_";
         std::vector<std::string> signals={"step_tick","host_tick","ack_matched","ack_host_tick","dsp_session","dsp_sequence","dsp_command_sequence","ctrl_input_session","ctrl_input_sequence","dropped_samples","dsp_fault","dsp_arm_mask","digital_in","digital_out","analog_valid","analog_out_valid","encoder_valid","ao0_raw","ao1_raw"};
         for(unsigned i=0;i<6;i++)signals.push_back("ai"+std::to_string(i)+"_raw");
-        for(const auto* suffix:{"ctrl_valid","ctrl_type","ctrl_revision","ctrl_r_mm","ctrl_y_mm","ctrl_error_counts","ctrl_kp","ctrl_u_duty",
-                                "ctrl_u_im_duty","ctrl_u_g_duty","requested_duty","output_duty","position_mm","raw_counts"})
+        for(const auto* suffix:{"ctrl_valid","ctrl_type","ctrl_revision","ctrl_error_counts","ctrl_kp","ctrl_u_duty",
+                                "ctrl_u_im_duty","ctrl_u_g_duty","requested_duty","output_duty","raw_counts"})
             signals.push_back(prefix+suffix);
+        for(const char* field:{"ctrl_r_","ctrl_y_","position_"})signals.push_back(prefix+field+unit_name(latest_.unit[axis]));
         Command c{};c.op=Op::step_start;c.axis=axis;c.value=1;c.enabled=true;c.program=program.get();
         c.check_stop=true;c.stop_count=latest_.stop_count;c.record=++record_id_;
         try {recorder_->start(record_id_,signals,latest_,DIAMOND_PROJECT_ID,program->id);}
@@ -386,12 +399,17 @@ private:
         msg.project_id=DIAMOND_PROJECT_ID;
 
         msg.controller_revision=s.controller_revision;
-        msg.control_mode=s.mode;msg.pwm_target=s.pwm;msg.counts_per_mm=s.scale;
-        msg.minimum_mm=s.minimum;msg.maximum_mm=s.maximum;
+        msg.control_mode=s.mode;msg.pwm_target=s.pwm;msg.counts_per_unit=s.scale;msg.reverse_direction=s.reversed;
+        msg.minimum=s.minimum;msg.maximum=s.maximum;
         msg.sample_count=s.number;msg.timestamp_us=s.timestamp;msg.connected=s.connected;msg.mock=mock_;
-        msg.system_enabled=s.system;msg.position_mm=s.position;msg.target_mm=s.target;msg.reference_mm=s.reference;
+        msg.system_enabled=s.system;msg.position=s.position;msg.target=s.target;msg.reference=s.reference;
         msg.zero_counts=s.zero;
         for(unsigned a=0;a<kAxes;a++) {
+            msg.position_unit[a]=unit_name(s.unit[a]);
+            if(s.unit[a]==PositionUnit::mm) {
+                msg.counts_per_mm[a]=s.scale[a];msg.minimum_mm[a]=s.minimum[a];msg.maximum_mm[a]=s.maximum[a];
+                msg.position_mm[a]=s.position[a];msg.target_mm[a]=s.target[a];msg.reference_mm[a]=s.reference[a];
+            }
             msg.controllers[a]=profile_message(s.profiles[a],s.controllers[a]);
             msg.axis_enabled[a]=s.selected[a];msg.duty_limit[a]=s.tuning[a].limit;
         }
@@ -426,7 +444,10 @@ private:
         msg.runner_error=error_text(s.runner_error);msg.runner_axis_mask=s.runner_axes;msg.runner_do_mask=s.runner_digital;msg.runner_ao_mask=s.runner_analog;
         publisher_->publish(msg);
         sensor_msgs::msg::JointState j;
-        j.header.stamp=now();j.name={"axis0","axis1"};j.position={s.position[0]/1000,s.position[1]/1000};
+        j.header.stamp=now();
+        for(unsigned a=0;a<kAxes;a++)if(s.position_configured[a]){
+            j.name.push_back("axis"+std::to_string(a));j.position.push_back(s.joint_position(a));
+        }
         joints_->publish(j);
     }
 
@@ -512,7 +533,7 @@ private:
                         // shortcut: deterministic first-order plant, use hardware for controller validation.
                         if(mask&(1U<<a)) {
                             if(core_.state.mode[a]==1 || core_.controllers[a].config.type==step_recorder_type) mock_position[a]+=values[a]*core_.controllers[a].sign*50*dt*(core_.state.position_configured[a]?core_.state.scale[a]:1000);
-                            else mock_position[a]+=(core_.state.zero[a]+core_.state.reference[a]*core_.state.scale[a]-mock_position[a])*0.08;
+                            else mock_position[a]+=(core_.state.raw_reference(a,core_.state.reference[a])-mock_position[a])*0.08;
                         }
                         simulated.position[a]=static_cast<int32_t>(std::llround(mock_position[a]));
                         simulated.requested_duty[a]=simulated.duty[a]=values[a];
@@ -526,7 +547,7 @@ private:
                     operation=op;
                     std::array<int32_t,6> references{};
                     for(unsigned a=0;a<kAxes;a++) references[a]=static_cast<int32_t>(static_cast<uint32_t>(
-                        std::llround(core_.state.zero[a]+core_.state.reference[a]*core_.state.scale[a])));
+                        std::llround(core_.state.raw_reference(a,core_.state.reference[a]))));
                     const auto telemetry=link->exchange(op,op==PCD_CYCLE?values:Values{},mask,references,
                         core_.state.digital_out,core_.state.analog_out);
                     const auto& sent=link->last_command();

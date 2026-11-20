@@ -14,6 +14,14 @@ int main(){
     history.put(7,64,first_tick);
     assert(!history.find(7,0).host_tick && !history.find(0,0).host_tick);
     Control core;core.receive({});
+    auto mixed=core.state;mixed.unit[1]=PositionUnit::deg;
+    Program mixed_program;mixed_program.name="linear-and-rotary";mixed_program.channels={0,19};mixed_program.values={1.25,-12.5};
+    validate_program(mixed_program,mixed);assert(mixed_program.channels[1]==1&&mixed_program.axes==3);
+    Program wrong;wrong.name="bad unit";wrong.channels={1};wrong.values={2};
+    bool wrong_unit=false;try{validate_program(wrong,mixed);}catch(const std::runtime_error&){wrong_unit=true;}assert(wrong_unit);
+    const auto catalog=signal_catalog(mixed.unit);
+    assert(std::any_of(catalog.begin(),catalog.end(),[](const Signal& f){return f.name=="axis1_ctrl_r_deg"&&f.unit=="deg";}));
+    assert(std::none_of(catalog.begin(),catalog.end(),[](const Signal& f){return f.name=="axis1_position_mm";}));
     Program p;p.id=1;p.name="pulse";p.channels={0,1,12};
     for(int i=0;i<40;i++){p.values.push_back(i*.01);p.values.push_back(-i*.01);p.values.push_back(i<10?1:0);}
     validate_program(p,core.state);

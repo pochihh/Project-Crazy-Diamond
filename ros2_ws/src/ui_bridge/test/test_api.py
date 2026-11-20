@@ -145,13 +145,14 @@ def test_continuous_inputs_publish_without_waiting_for_service_or_state_ack(tmp_
             self.sent = []
         def snapshot(self):
             return {'bridge_alive': True, 'connected': True}
-        def publish_input(self, operation, channel, value):
-            self.sent.append((operation, channel, value))
+        def publish_input(self, operation, channel, value, unit):
+            self.sent.append((operation, channel, value, unit))
     ros = OnlineRos()
     client = TestClient(create_app(ros, tmp_path, tmp_path / 'missing-ui'))
     assert client.post('/api/command', json={'operation':'pwm','axis':5,'value':.2}).json()['published']
     assert client.post('/api/command', json={'operation':'target','axis':0,'value':7}).json()['published']
-    assert ros.sent == [('pwm',5,.2),('target',0,7)]
+    assert client.post('/api/command', json={'operation':'target','axis':2,'value':30,'unit':'deg'}).json()['published']
+    assert ros.sent == [('pwm',5,.2,'mm'),('target',0,7,'mm'),('target',2,30,'deg')]
     assert client.post('/api/command', json={'operation':'analog','axis':1,'value':1.5}).status_code == 422
     assert client.post('/api/command', json={'operation':'digital','axis':0,'value':2}).status_code == 422
     assert client.post('/api/command', json={'operation':'system','enabled':True}).status_code == 503

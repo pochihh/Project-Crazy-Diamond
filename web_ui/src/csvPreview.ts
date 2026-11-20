@@ -24,7 +24,7 @@ export function csvPreview(plot:SignalPlot) {
             const span=data.rows/rate;
             caption.textContent=`${name} · ${data.rows.toLocaleString()} ticks · ${span.toFixed(3)} s · min/max per ${data.rows_per_bin} tick(s)`;
             const inputs: HTMLInputElement[]=[];
-            const traces: Trace[]=data.channels.map((name,index)=>({name,index,unit:name.endsWith('_mm')?'mm':name.endsWith('_duty')?'duty':name.startsWith('do')?'bool':'code'}));
+            const traces: Trace[]=data.channels.map((name,index)=>({name,index,unit:name.endsWith('_mm')?'mm':name.endsWith('_deg')?'deg':name.endsWith('_duty')?'duty':name.startsWith('do')?'bool':'code'}));
             const update=()=>{plot.select(traces.filter((_,i)=>inputs[i].checked));plot.draw();};
             for (const trace of traces) {
                 const label=document.createElement('label'), check=document.createElement('input');

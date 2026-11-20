@@ -10,12 +10,12 @@ export function controllerDiagram(host: HTMLElement) {
     dialog.append(close,large);document.body.append(dialog);host.append(image,expand,signals);
     expand.onclick=()=>dialog.showModal();close.onclick=()=>dialog.close();
     let previous='', generation=0,signalKey='';
-    return async (type:string, axis:number)=>{
+    return async (type:string, axis:number, unit:string)=>{
         const doc=documents[`../../ros2_ws/doc/diagrams/${type}.md`];
-        if(signalKey!==axis+'/'+type){
-            signalKey=axis+'/'+type;
+        if(signalKey!==axis+'/'+type+'/'+unit){
+            signalKey=axis+'/'+type+'/'+unit;
             const fields=doc?.match(/^Signals: (.+)$/m)?.[1].match(/`([a-z_]+)`/g)??[];
-            signals.textContent=fields.length ? `Logger · axis${axis}_ prefix · `+fields.map(f=>f.slice(1,-1)).join(' · ') : '';
+            signals.textContent=fields.length ? `Logger · axis${axis}_ prefix · `+fields.map(f=>f.slice(1,-1).replace(/_mm$/, '_'+unit)).join(' · ') : '';
         }
         if (previous===type) return;
         previous=type;

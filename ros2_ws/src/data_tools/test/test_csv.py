@@ -9,6 +9,15 @@ def test_headers_and_values():
 def test_invalid(csv):
     with pytest.raises(ValueError):parse_csv(csv)
 
+def test_mixed_position_units_and_preview():
+    from data_tools.csv_program import preview_bins
+    channels,values,_=parse_csv('axis0_reference_mm,axis2_reference_deg\n1,-19.5\n')
+    assert channels==[0,20] and values==[1,-19.5]
+    assert preview_bins(channels,values)['channels']==['axis0_reference_mm','axis2_reference_deg']
+    with pytest.raises(ValueError):parse_csv('axis2_reference_deg,axis2_reference_mm\n1,1\n')
+    with pytest.raises(ValueError):parse_csv('axis2_reference_deg,axis2_duty\n1,0\n')
+
+
 def test_paths(tmp_path):
     assert library_path(tmp_path,'experiment.csv').parent==tmp_path
     for name in ['../a.csv','/tmp/a.csv','a.txt']:

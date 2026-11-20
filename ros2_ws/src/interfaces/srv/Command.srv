@@ -10,6 +10,8 @@ uint64 controller_revision
 bool set_reference
 bool slew_enabled
 float64 slew_rate_mm_s 20.0
+# -1 selects the legacy mm/s field for linear axes.
+float64 slew_rate_per_s -1.0
 ---
 bool accepted
 uint64 command_id
