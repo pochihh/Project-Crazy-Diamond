@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 from pathlib import Path
 import socket
@@ -7,6 +8,7 @@ import time
 import rclpy
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import URL
 from pydantic import BaseModel, Field
 from rosidl_runtime_py.convert import message_to_ordereddict
 from interfaces.msg import RobotPanel
@@ -14,6 +16,15 @@ from phantom_interfaces.srv import Command as PhantomCommand
 from interfaces.srv import RunnerCommand, LoadCsv, LoadProgram, ListPrograms, Command
 from data_tools.ros_client import Operations
 from phantom_robot.waveform import sine, approach_zero, DEFAULT_SIGNALS, MAX_APPROACH_S
+
+STATIC_DIR = Path(__file__).parent / 'static'
+
+
+def panel_url(base_url):
+    digest = hashlib.sha256()
+    for name in ('index.html', 'reference.js'):
+        digest.update((STATIC_DIR / name).read_bytes())
+    return str(URL(base_url).include_query_params(pcd_rev=digest.hexdigest()[:16]))
 
 
 class Phantom(Operations):
@@ -26,7 +37,7 @@ class Phantom(Operations):
         self.received_at=0.0
         self.start_sample=0
         self.port=int(os.environ.get('PHANTOM_PORT','8001'))
-        self.url=os.environ.get('PHANTOM_PANEL_URL',f'http://{socket.gethostname()}.local:{self.port}/')
+        self.url=panel_url(os.environ.get('PHANTOM_PANEL_URL',f'http://{socket.gethostname()}.local:{self.port}/'))
         self.loader=self.create_client(LoadProgram,'/data/program',callback_group=self.group)
         self.csv=self.create_client(LoadCsv,'/data/load_csv',callback_group=self.group)
         self.runner=self.create_client(RunnerCommand,'/data/runner',callback_group=self.group)
@@ -191,7 +202,7 @@ def app_for(node):
                               MAX_APPROACH_S+60 if body.operation=='start' else 30)
         if not result['accepted']:raise HTTPException(409,result['message'])
         return result
-    app.mount('/',StaticFiles(directory=Path(__file__).parent/'static',html=True))
+    app.mount('/',StaticFiles(directory=STATIC_DIR,html=True))
     return app
 
 

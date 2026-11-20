@@ -32,7 +32,7 @@ its selected completion mode; use the generic runner or Stop All to stop it.
 
 `phantom_robot` serves its panel on port 8001 and advertises every 0.5 s. Set
 `PHANTOM_PANEL_URL` to the browser-reachable URL when hostname resolution differs;
-`PHANTOM_PORT` changes the server port. The panel uses its own `/state`, `/files`
+`PHANTOM_PORT` changes the server port. At startup Phantom adds a content revision to the advertised URL so browsers fetch matching panel assets after deployment. The panel uses its own `/state`, `/files`
 and `/command` endpoints. ROS clients call `/phantom/command` directly.
 
 `phantom_interfaces/srv/Command` fields:
