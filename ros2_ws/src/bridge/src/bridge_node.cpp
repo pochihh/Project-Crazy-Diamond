@@ -535,6 +535,7 @@ private:
                             if(core_.state.mode[a]==1 || core_.controllers[a].config.type==step_recorder_type) mock_position[a]+=values[a]*core_.controllers[a].sign*50*dt*(core_.state.position_configured[a]?core_.state.scale[a]:1000);
                             else mock_position[a]+=(core_.state.raw_reference(a,core_.state.reference[a])-mock_position[a])*0.08;
                         }
+                        simulated.reference[a]=static_cast<int32_t>(std::llround(core_.state.raw_reference(a,core_.state.reference[a])));
                         simulated.position[a]=static_cast<int32_t>(std::llround(mock_position[a]));
                         simulated.requested_duty[a]=simulated.duty[a]=values[a];
                     }

@@ -14,12 +14,12 @@ bridge:
     axis1.motor_sign: -1.0
     axis1.duty_limit: 1.0
     axis0.position_unit: mm
-    axis0.reverse_direction: false
+    axis0.reverse_direction: true
     axis0.counts_per_mm: 321.846662696944
     axis0.minimum_mm: -50.0
     axis0.maximum_mm: 50.0
     axis1.position_unit: mm
-    axis1.reverse_direction: false
+    axis1.reverse_direction: true
     axis1.counts_per_mm: 321.846662696944
     axis1.minimum_mm: -50.0
     axis1.maximum_mm: 50.0
@@ -28,7 +28,7 @@ bridge:
     axis2.motor_sign: -1.0
     axis2.duty_limit: 1.0
     axis2.position_unit: mm
-    axis2.reverse_direction: false
+    axis2.reverse_direction: true
     axis2.counts_per_mm: 321.846662696944
     axis2.minimum_mm: -50.0
     axis2.maximum_mm: 50.0

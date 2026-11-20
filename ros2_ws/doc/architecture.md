@@ -36,10 +36,10 @@ flowchart TD
   serving its own panel. It calls the same runner/logger APIs as other clients.
 
 Controllers receive calibrated reference/feedback and return signed normalized
-DSP duty. The PID preserves count-based gains internally. Its optional reference
+axis duty. The bridge applies the configured direction to encoder displacement, the raw reference, and outgoing duty. Raw DSP telemetry stays in hardware coordinates. The PID preserves count-based gains internally. Its optional reference
 slew limiter is part of the controller block and profile, not bridge transport.
 Direct duty bypasses the entire feedback controller. Calibration, motor polarity
-and duty caps remain axis configuration. `minimum_mm`/`maximum_mm` control slider
+and duty caps remain axis configuration. `minimum`/`maximum` control slider
 display only; the host does not impose tracking-error or travel protection.
 Deadline disarm is a project startup policy, `disarm_on_deadline_miss`; the current
 bench sets it to false. Missed periods and diagnostic events are always logged.

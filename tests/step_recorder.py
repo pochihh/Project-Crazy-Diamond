@@ -51,6 +51,7 @@ initial = request('/api/state')
 assert initial['mock'] and initial['connected'] and not initial['recording'] and not any(initial['axis_enabled'])
 assert 'step_recorder' in [item['type'] for item in request('/api/controllers')['types']]
 original_profile = initial['controllers'][0]['id']
+direction = -1 if initial['reverse_direction'][0] else 1
 try:
     command('profile_load', profile='step_recorder')
     for gain in (0, .0005):
@@ -68,9 +69,9 @@ try:
             assert int(row['ctrl_input_sequence']) < int(row['dsp_sequence'])
             assert 0 < int(row['ack_host_tick']) <= int(row['host_tick'])
             assert float(row['axis0_ctrl_r_mm']) == 0
-            injection = -.12 if 50 <= tick < 150 else 0.
+            injection = direction * -.12 if 50 <= tick < 150 else 0.
             assert float(row['axis0_ctrl_u_im_duty']) == injection
-            feedback = -gain * float(row['axis0_ctrl_error_counts'])
+            feedback = -direction * gain * float(row['axis0_ctrl_error_counts'])
             assert math.isclose(feedback, float(row['axis0_ctrl_u_duty']), abs_tol=1e-10)
             duty = max(-1., min(1., feedback + injection))
             for field in ('axis0_ctrl_u_g_duty', 'axis0_requested_duty', 'axis0_output_duty'):

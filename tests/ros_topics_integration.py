@@ -75,11 +75,12 @@ try:
         assert not any(initial.position_configured)
     call('mode', axis, 1);call('limit', axis, .1)
     call('axis', axis, enabled=True);call('system', enabled=True)
+    expected_duty = -.015 if initial.reverse_direction[axis] else .015
     duty.publish(DutyCommand(axis=axis, duty=.015))
-    wait(lambda: abs(latest[0].dsp.duty[axis]-.015)<1e-6)
+    wait(lambda: abs(latest[0].dsp.duty[axis]-expected_duty)<1e-6)
     node.destroy_publisher(duty)
     def duty_held(s):
-        assert s.connected and s.system_enabled and not s.fault and abs(s.dsp.duty[axis]-.015)<1e-6
+        assert s.connected and s.system_enabled and not s.fault and abs(s.dsp.duty[axis]-expected_duty)<1e-6
     hold(.3 if args.physical else 2, duty_held)
     call('stop')
     wait(lambda: latest[0].dsp.arm_mask==0 and not any(latest[0].dsp.duty))

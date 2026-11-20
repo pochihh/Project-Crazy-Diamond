@@ -58,8 +58,6 @@ class Phantom(Operations):
         s=self.state
         if s is None or time.monotonic()-self.received_at>1 or not s.connected or s.fault:
             raise ValueError('Start cancelled: bridge feedback is unavailable or faulted')
-        if any(unit!='mm' for unit in s.position_unit[:2]):
-            raise ValueError('Heart Phantom requires linear axes 0 and 1 in mm')
         if s.sample_count<self.start_sample or s.stop_count!=stop_count:
             raise ValueError('Start cancelled by Stop or bridge restart')
         return s
@@ -122,6 +120,8 @@ class Phantom(Operations):
         try:
             if self.state is None or time.monotonic()-self.received_at>1 or not self.state.connected or self.state.fault:
                 raise ValueError('Bridge must be connected and fault-free')
+            if any(unit!='mm' for unit in self.state.position_unit[:2]):
+                raise ValueError('Heart Phantom requires linear axes 0 and 1 in mm')
             if self.state.runner_state in (1,2) or self.state.recording:
                 raise ValueError('Stop the active run/recording before starting a phantom experiment')
             stop_count=self.state.stop_count

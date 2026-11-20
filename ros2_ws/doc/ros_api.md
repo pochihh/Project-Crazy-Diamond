@@ -8,13 +8,13 @@ in `robots/phantom_interfaces/`. Callers do not need the web UI.
 
 | Endpoint | Type | Meaning |
 |---|---|---|
-| `/bridge/target` | `interfaces/msg/PositionCommand` | `axis`, `position_mm`; position mode |
-| `/dsp/duty` | `interfaces/msg/DutyCommand` | `axis`, `duty`; direct mode, signed normalized DSP duty |
+| `/bridge/target` | `interfaces/msg/PositionCommand` | `axis`, `unit` (mm or deg), `position`. With an empty unit the legacy `position_mm` accepts linear targets. Unit mismatches increment `input_rejections`. |
+| `/dsp/duty` | `interfaces/msg/DutyCommand` | `axis`, `duty`; direct mode, signed normalized axis duty. Reversal changes its sign at the DSP. |
 | `/dsp/digital_out` | `interfaces/msg/DigitalCommand` | `channel`, boolean `value` |
 | `/dsp/analog_out` | `interfaces/msg/AnalogCommand` | `channel`, uint16 `value` 0…4095 |
 | `/dsp/state` | `interfaces/msg/DspState` | Latest newly decoded raw frame, maximum 50 Hz |
 | `/bridge/state` | `interfaces/msg/BridgeState` | Host/control/recorder/runner state and nested DSP snapshot, 50 Hz |
-| `/joint_states` | `sensor_msgs/msg/JointState` | Two calibrated bench positions in meters |
+| `/joint_states` | `sensor_msgs/msg/JointState` | All position-configured axes, in DSP channel order. Linear positions are metres and rotary positions are radians. |
 | `/bridge/command` | `interfaces/srv/Command` | Discrete enable/mode/configuration operations |
 | `/dsp/command` | `interfaces/srv/DspCommand` | DISARM=0 or CLEAR_FAULT=1; no reboot operation |
 | `/bridge/command_result` | `interfaces/msg/CommandResult` | Actual worker application result by command ID |
@@ -25,7 +25,8 @@ streams are reliable depth 1. `/data/preview` is best-effort depth 1. Discrete
 `accepted=true` means queued; wait for the matching CommandResult before treating
 it as applied. A hardware acknowledgement is separately exposed in DSP state.
 Continuous inputs have no per-message ack; observe state and `input_rejections`.
-Position references are not restricted by `minimum_mm`/`maximum_mm`; those fields
+State reports per-axis `position_unit`, `reverse_direction`, `counts_per_unit`, `position`, `target`, and `reference`. Legacy `*_mm` arrays remain available for linear axes and contain zero in rotary slots. The HTTP target command accepts `unit`, defaulting to `mm`.
+Position references are not restricted by `minimum`/`maximum`; those fields
 describe the UI slider range. Finite values must fit the DSP's signed 32-bit
 encoder-count reference field. PWM duty bounds and SPI/DSP fault gates remain.
 
@@ -37,7 +38,7 @@ hardware limit changes require disable; PID parameter tuning is online.
 
 `controller_apply` takes complete `parameter_names`/`parameter_values` and a
 compiled `controller_type`. Set `set_reference=true` to apply `slew_enabled` and
-`slew_rate_mm_s`; otherwise existing reference configuration is preserved. Save
+`slew_rate_per_s` (mm/s or deg/s for this axis). The legacy `slew_rate_mm_s` input remains available on linear axes. Otherwise existing reference configuration is preserved. Save
 operations require the current `controller_revision` to avoid saving stale state.
 
 For controller/profile/gain/duty-limit commands, `CommandResult.has_controller`
@@ -61,7 +62,7 @@ success; a missing or mismatched read-back is an error, not a successful Apply.
 | `/data/runner` | `interfaces/srv/RunnerCommand` | `operation=start/stop`, `completion=hold/stop/loop`, `auto_enable`, `record`, `signals[]` |
 
 `LoadProgram` channel IDs: 0–5 reference mm, 6–11 duty for axes 0–5,
-12–15 DO0–3, 16–17 AO0–1 raw codes. Array width is `channels.size()`; values must
+12–15 DO0–3, 16–17 AO0–1 raw codes, and 18–23 reference degrees for axes 0–5. Each reference must match the configured axis unit. Array width is `channels.size()`; values must
 contain complete rows. This management API allows robot nodes to prepare typed
 programs without CSV. It does not stream one ROS message per realtime tick.
 

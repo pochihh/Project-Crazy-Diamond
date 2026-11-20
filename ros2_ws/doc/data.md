@@ -10,7 +10,7 @@ There is one active recorder and one loaded program per bridge.
 Use `/data/signals` to get the complete signal catalog, names, units, groups and
 numeric/text flags. It includes six-axis control/feedback, controller parameters,
 DSP diagnostics, encoder counts, DIO/AIO, host RT counters and runner position.
-Millimeter fields for channels without position calibration are not meaningful;
+Position columns carry the active unit (for example `axis2_position_deg` or `axis2_position_mm`). For channels without position calibration,
 record their encoder counts and `position_configured` flag instead.
 
 `/data/logger` Start chooses columns; an empty list means all catalog fields.
@@ -53,8 +53,9 @@ columns in a row are applied together before controller execution.
 
 | Exact headers | Meaning |
 |---|---|
-| `axis0_reference_mm` … `axis5_reference_mm` | Position reference passed to that axis's controller; requires calibration |
-| `axis0_duty` … `axis5_duty` | Signed normalized DSP duty, −1…+1, constrained by configured cap |
+| `axis0_reference_mm` … `axis5_reference_mm` | Position reference on a calibrated linear axis |
+| `axis0_reference_deg` … `axis5_reference_deg` | Position reference on a calibrated rotary axis |
+| `axis0_duty` … `axis5_duty` | Signed normalized axis duty, −1…+1, constrained by configured cap |
 | `do0` … `do3` | Digital output, exactly 0 or 1 |
 | `ao0_raw`, `ao1_raw` | DAC code, integer 0…4095 |
 

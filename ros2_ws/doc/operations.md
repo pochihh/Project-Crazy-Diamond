@@ -90,14 +90,32 @@ that origin. Bridge/DSP restart establishes a new origin and remains disarmed.
 Reset is a `/bridge/command` operation applied by the realtime worker, not a
 browser display offset. It captures `zero_counts[axis]` from the latest DSP
 encoder count and clears that axis's target, reference, and controller history.
-All consumers, including Phantom and CSV playback, use the same coordinates:
-`position_mm = (dsp.position - zero_counts) / counts_per_mm`. The raw DSP encoder
-count intentionally remains unchanged; the reference sent to the DSP is
-`zero_counts + reference_mm * counts_per_mm`. The UI waits for the bridge's
+The bridge, Phantom and CSV playback share that origin and the axis direction described below. The UI waits for the bridge's
 application acknowledgement before reporting success. Reset is rejected while
 the axis is enabled or an active/holding runner owns it. Once reset, a stationary
 axis should need no return-to-zero travel before a sine run. The robot's settling
 wait still runs. `tests/phantom_startup.py` checks this at nonzero raw encoder counts.
+
+### Axis direction and position units
+
+Set `axisN.reverse_direction: true` in the project bridge YAML to reverse an axis. Keep its existing `motor_sign`, which matches the driver wiring to the encoder. The bridge applies the direction to both measured displacement and outgoing motor duty. The hardware readbacks in `/dsp/state` keep their original signs.
+
+Choose `position_unit: mm` for a linear axis or `position_unit: deg` for a rotary axis. Calibration is positive and is measured at the mechanism output. For a rotary motor encoder, divide decoded counts per **output** revolution by 360. For example, a 500-cycle motor encoder with ×4 decoding and a 91/6 reduction gives 84.25925926 counts per output degree. Rotary position is continuous through ±180° and 360°. The slider bounds only define its displayed range.
+
+```yaml
+# Example entries under bridge.ros__parameters for a rotary axis
+axis2.position_control: true
+axis2.position_unit: deg
+axis2.counts_per_deg: 84.25925925925926
+axis2.minimum_deg: -180.0
+axis2.maximum_deg: 180.0
+axis2.reverse_direction: true
+axis2.controller_profile: research_pid
+```
+
+The existing linear entries use `counts_per_mm`, `minimum_mm`, and `maximum_mm`. Linear units and forward direction are the defaults. Heart Phantom explicitly reverses all three installed linear axes. Restart the bridge with the rig idle to apply calibration and capture fresh zeros. Read back the active units and direction under **Resources** or from `/bridge/state`.
+
+With `d = −1` for a reversed axis and `+1` otherwise, the bridge computes `position = d × (raw_counts − zero_counts) / counts_per_unit` and `dsp_reference_counts = zero_counts + d × reference × counts_per_unit`. Manual PWM, CSV duty and Step Recorder injection also change output polarity when reversed. Controller trace duties and raw DSP duty readings share wire polarity.
 
 Open the PCD UI at `http://<pi-address>:8000/`. The dashboard and Resources list use the project manifest’s axes in DSP channel order (one to six). Axis controls are independent of the
 optional robot panel. Expand an axis to use its slider, numeric target, zero or plot.

@@ -2,7 +2,7 @@
 
 `AxisController` is the compiled realtime controller block. It owns the selected
 feedback implementation, the reference limiter state and tuning configuration.
-The bridge supplies target, measured position, counts/mm and the 0.0005 s period;
+The bridge supplies target, measured position, counts per configured position unit and the 0.0005 s period;
 the block exposes its applied reference and returns normalized motor duty.
 
 PID and Step Recorder are implemented. LQR awaits the owner's state model. Adding a new controller
@@ -21,12 +21,13 @@ parameters:
   d_filter_hz: 0.0
 reference:
   type: passthrough
-  max_rate_mm_s: 20.0
+  max_rate_per_s: 20.0
 ```
 
-`passthrough` applies the requested reference directly; `max_rate_mm_s` is inactive.
-`slew_limit` advances the block's internal reference by at most `max_rate_mm_s * dt`
+`passthrough` applies the requested reference directly; `max_rate_per_s` is inactive.
+`slew_limit` advances the block's internal reference by at most `max_rate_per_s * dt`
 per tick. It is a velocity/slew limit, not an acceleration-limited trajectory.
+The rate uses mm/s on a linear axis and deg/s on a rotary axis. Existing linear profiles may still specify `max_rate_mm_s`. To share a profile with active slew shaping across both kinds of axis, explicitly choose a numeric `max_rate_per_s` suitable for both. Save writes the generic key.
 The positive finite rate is stored even when bypassed so switching modes preserves
 its setting. Unknown reference modes/fields and old schema versions are rejected;
 all shipped profiles have been explicitly migrated to schema 2.
@@ -36,7 +37,7 @@ all shipped profiles have been explicitly migrated to schema 2.
 - Gain units remain duty/count, duty/(count·s), and duty·s/count. There is no
   automatic gain-unit conversion when displaying millimeters.
 - PID differentiates error with a backward difference at 2 kHz:
-  `e = (reference_mm - position_mm) * counts_per_mm`,
+  `e = (reference - position) * counts_per_unit`,
   `raw_d = (e - previous_e) / 0.0005`, `D = kd * filtered_d`,
   `duty = motor_sign * clamp(kp * e + I + D, -duty_limit, duty_limit)`.
   D is zero on the first tick after reset. `d_filter_hz = 0` bypasses filtering;
@@ -117,14 +118,16 @@ The RT bridge keeps a fixed ring of 64 outgoing commands indexed by sequence, ch
 | `axisN_ctrl_u_duty`, `axisN_ctrl_u_im_duty`, `axisN_ctrl_u_g_duty` | Feedback output, additive excitation, and capped float duty sent to the plant |
 | `axisN_requested_duty`, `axisN_output_duty`, `axisN_position_mm` | The DSP's requested and applied duty and the position observed in this snapshot |
 
+For rotary axes, position, reference, and controller-position signal names in this table end in `_deg`.
+
 Use `ack_matched` and `axisN_ctrl_valid` when interpreting controller columns. A repeated acknowledgement can legitimately appear with a newer encoder sample. A skipped command can lack any observed DSP snapshot. Missing history is marked invalid and never filled with the most recent controller values. DSP applied duty is a firmware readback; motor-terminal voltage is a separate measurement.
 
 ## Step Recorder
 
-1. Disable the selected axis. Use its existing zero, or move it and use **Reset zero**. The reference throughout this experiment is exactly 0 mm at that origin.
-2. Open the axis gear, select the **step_recorder** saved profile and **Load / Reload**. Adjust **Kp**, signed **step_duty** (0.05 means 5% in DSP polarity), **baseline_s**, **step_s** and **recovery_s**. Apply and check the active revision.
+1. Disable the selected axis. Use its existing zero, or move it and use **Reset zero**. The reference throughout this experiment is exactly zero at that origin.
+2. Open the axis gear, select the **step_recorder** saved profile and **Load / Reload**. Adjust **Kp**, signed **step_duty** (0.05 means 5% axis duty before direction reversal), **baseline_s**, **step_s** and **recovery_s**. Apply and check the active revision.
 3. Press **Start + record**. The bridge opens a CSV, enables only the requested experiment axis (other already enabled axes retain their selection), and starts the timeline once the DSP reports the axis armed. At 2 kHz each duration is rounded to the nearest tick. Each run captures its own timing and amplitude. Same-type Kp adjustments take effect live.
-4. The proportional output is `u = motor_sign × Kp × (0 − position_mm) × counts_per_mm`. Injection is zero during baseline and recovery. During the step it equals the signed amplitude. The outgoing duty is `u_g = clamp(u + u_im, −axis_limit, +axis_limit)`. Kp zero gives an open-loop motor step. The duty cap can clip excitation.
+4. The recorded proportional output is `u = direction × motor_sign × Kp × (0 − position) × counts_per_unit`. Recorded injection is zero during baseline and recovery. During the step it equals `direction × step_duty`. The outgoing duty is `u_g = clamp(u + u_im, −axis_limit, +axis_limit)`. Kp zero gives an open-loop motor step. The duty cap can clip excitation.
 5. At completion or **Stop + save**, the runner disables the experiment axis and closes the recording. Stop All and bridge faults interrupt the run. Download the CSV under **Data → Recordings**. The step replaces the previously loaded runner program; loading a saved CSV selects that CSV again.
 
 The step CSV automatically includes the aligned frame identifiers, injected/feedback/total duty, DSP duty readbacks, position, raw counts, digital input/output masks, six analog inputs, two analog outputs, tick and validity. `step_tick` is zero-based; use it to locate actual phase edges or identify duplicated/skipped commands. The recorder follows the acknowledged command through the SPI pipeline at both ends of the run. An existing recording or runner must finish before starting another experiment.
