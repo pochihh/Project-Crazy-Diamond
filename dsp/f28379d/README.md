@@ -25,6 +25,33 @@ clears faults explicitly and arms outputs; motor mask zero permits I/O-only use.
 Automatic homing, auxiliary encoders, current sensing and limit-switch handling
 are not implemented. UI **Reset zero** changes the host offset, not DSP counts.
 
+See the [state machine and SPI command reference](../DSP_FINITE_STATE_MACHINE.md)
+for command guards, transitions and complete RX/TX word layouts.
+
+## Known issues (future fix)
+
+### 1. Unnecessary position references in SPI frames
+
+Protocol v5 still sends six host position references in command words **24–35**
+and echoes them in telemetry words **70–81**. The DSP only stores and echoes
+these values; they do not affect motor control or safety. The Pi generates the
+references and uses them locally to calculate duty, and its recorder already
+records the host reference values.
+
+Removing these fields from the SPI payload is deferred to a future batch of
+fixes. Keep the current frame layout until that coordinated host/firmware
+protocol update; the Pi's local reference generation remains necessary.
+
+### 2. Telemetry structure clean-up
+- We should keep total frame word count 96, while keeping both crc at the end (position 95) for both tx and rx. In between we can still have reserved words, whose values need to be filled 0 or the crc won't pass. 
+
+### 3. Expanding IOs
+- I do want expand the IO a bit, it can be motor, DIO, AIO, etc. So we can make the best use of the system. We need to still keep the performance as the top priority.
+- I want to also calculate the pins needed to do FOC in the future. I want to support at least 4 brushless motors. It can be sharing the pins with the DC motors, just I want to plan ahead so I can design the PCB, with the motor drive part modulized and can be swapped between brushed and brushless motors. For now I feel like 3 dc motor swapped with 2 brushless motors is a reasonale desing. The firmware does not need to support the swap online. This can be a config that needs flashing the firmware. We also do not need to do the firmware development for the brushless motors either. We only need to check the resources and reserve the pins. 
+### 4. Rename the states
+- DISARM -> IDLE
+- ACTIVE -> RUNNING
+- SYNC -> INIT
 ## Active pin map
 
 Numbers are **HSEC dock pins**, not GPIO numbers. Software axes 0–5 correspond
