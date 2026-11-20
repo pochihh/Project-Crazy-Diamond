@@ -18,8 +18,8 @@ import rclpy
 from rclpy.node import Node
 from rosidl_runtime_py.convert import message_to_ordereddict
 from rosidl_runtime_py.utilities import get_message
-from rclpy.qos import QoSProfile, ReliabilityPolicy
-from interfaces.msg import DataPreview, RobotPanel, BridgeState, CommandResult, PositionCommand, DutyCommand, DigitalCommand, AnalogCommand
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+from interfaces.msg import CsvPreview, DataPreview, RobotPanel, BridgeState, CommandResult, PositionCommand, DutyCommand, DigitalCommand, AnalogCommand
 from interfaces.srv import LoggerCommand, RunnerCommand, LoadCsv, ListPrograms, SignalCatalog, Command, ControllerCatalog, DspCommand
 from ui_bridge.system_status import SystemStatus
 
@@ -40,6 +40,9 @@ class RosClient(Node):
             'analog': (self.create_publisher(AnalogCommand, '/dsp/analog_out', 16), AnalogCommand, 'channel', 'value'),
         }
         self.catalog_client = self.create_client(ControllerCatalog, '/bridge/controllers')
+        self.csv_preview = {}
+        self.create_subscription(CsvPreview, '/data/csv_preview', self.update_csv_preview,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.preview = {}
         self.previews = deque(maxlen=100)
         self.robot = {}
@@ -53,6 +56,9 @@ class RosClient(Node):
         self.results = {}
         self.result_subscription = self.create_subscription(CommandResult, '/bridge/command_result', self.result, 256)
         self.subscription = self.create_subscription(BridgeState, '/bridge/state', self.update, 1)
+
+    def update_csv_preview(self, message):
+        self.csv_preview = dict(message_to_ordereddict(message))
 
     def update_preview(self, message):
         if self.preview and message.sequence<=self.preview["sequence"]: self.previews.clear()
@@ -87,6 +93,7 @@ class RosClient(Node):
         state = self.state.copy()
         age = time.monotonic() - self.received
         state.update(bridge_alive=age < 1.0, state_age_ms=round(age * 1000) if self.received else None)
+        state['csv_preview_id'] = getattr(self, 'csv_preview', {}).get('program_id', 0)
         state['robot'] = self.robot if time.monotonic()-self.robot_received < 2 else None
         return state
 
@@ -173,6 +180,13 @@ def create_app(ros, recordings: Path, static: Path, project=None):
 
     @app.get('/api/data/signals')
     async def signals(): return await data_service('signals',SignalCatalog.Request())
+
+    @app.get('/api/data/csv_preview')
+    async def csv_preview(program_id: int):
+        preview = ros.csv_preview
+        if preview.get('program_id') != program_id or ros.state.get('program_id') != program_id:
+            raise HTTPException(404, 'No CSV preview for this program')
+        return preview
 
     @app.get('/api/data/programs')
     async def programs(): return await data_service('programs',ListPrograms.Request())

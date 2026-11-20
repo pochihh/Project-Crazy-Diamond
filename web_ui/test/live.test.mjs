@@ -10,7 +10,21 @@ async function source(name) {
 }
 const {PositionPlot}=await source('plot');
 const {command}=await source('command');
-const {displayValue}=await source('data');
+const {displayValue,peakLevel,dspView}=await source('instruments');
+
+test('meter peaks rise immediately and decay at 25 percentage points per second',()=>{
+  assert.equal(peakLevel(20,80,10),80);
+  assert.equal(peakLevel(80,20,1000),55);
+  assert.equal(peakLevel(55,20,2000),20);
+});
+
+test('DSP labels require synchronized feedback and honor reported faults',()=>{
+  assert.equal(dspView(true,0,1,0),'INIT');
+  assert.equal(dspView(false,7,1,0),'INIT');
+  assert.equal(dspView(true,7,0,0),'IDLE');
+  assert.equal(dspView(true,7,1,0),'RUNNING');
+  assert.equal(dspView(true,7,0,1),'FAULT');
+});
 
 test('near-zero display residues are zero without hiding small measurable values',()=>{
   assert.equal(displayValue(5e-23),'0');

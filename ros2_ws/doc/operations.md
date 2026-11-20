@@ -98,8 +98,18 @@ axis should need no return-to-zero travel before a sine run. The robot's settlin
 wait still runs. `tests/phantom_startup.py` checks this at nonzero raw encoder counts.
 
 Open the PCD UI at `http://<pi-address>:8000/`. Axis controls are independent of the
-optional robot panel. The Logger tab selects signals and records/downloads CSV;
-the Runner tab selects a saved program or uploads one. Any ROS node can operate
+optional robot panel. Expand an axis to use its slider, numeric target, zero or plot.
+The gear opens that axis's settings in the right column. The light meter band
+tracks recent magnitude peaks and falls at 25 percentage points per second.
+
+The DSP card shows INIT until feedback is synchronized, IDLE for disarmed, RUNNING
+for active, and FAULT for a DSP fault. Start uses the bridge system-enable command.
+Previously selected axes can become enabled on Start. Disarm uses DSP disarm.
+The expanded table distinguishes invalid commands received by the DSP from Pi
+telemetry/link errors. Pi fault clearing has its own action.
+
+On the Data page the runner loads or uploads CSVs, and the logger below selects
+signals, records and downloads CSVs. Any ROS node can operate
 those same backend services. Start on the phantom panel enables and records.
 Closing a browser does not stop a run. Stop All disables all motors and general
 I/O; runner-specific Stop affects its listed channels and associated recorder.

@@ -19,11 +19,12 @@ PCD embeds that panel at the top of the dashboard in a sandboxed iframe with
 scripts and same-origin access for the panel's own API. It hides the entire slot
 when no supported manifest has arrived for two seconds. Stop All remains outside
 the iframe. There is no runtime component loader, schema-driven panel editor or
-robot kinematics code in the PCD bundle. First-pass panel sizing is responsive;
-no cross-frame command protocol is required.
+robot kinematics code in the PCD bundle. Panels can report their content height on load and resize with
+`parent.postMessage({type: 'pcd.panel.size', height}, '*')`. PCD accepts height
+messages only from the embedded window and its registered origin.
 
-The panel's HTTP endpoints route to its robot ROS API. Generic Logger/Runner tabs
-observe the bridge's actual state, including operations started elsewhere. If
+The panel's HTTP endpoints route to its robot ROS API. The Data page
+observes the bridge's actual state, including operations started elsewhere. If
 the robot node/panel disappears, playback already loaded into PCD continues under
 its selected completion mode; use the generic runner or Stop All to stop it.
 
@@ -48,7 +49,7 @@ and `/command` endpoints. ROS clients call `/phantom/command` directly.
 | `completion` | `hold`, `stop`, `loop`; panel defaults to loop |
 | `filename` | Saved file from the shared `data/programs/` library |
 | `csv`, `overwrite` | Optional upload text and explicit replacement flag |
-| `signals[]` | Logger selection; empty selects phantom's reference/position/duty/gain/DO0/runner defaults |
+| `signals[]` | Logger selection; empty selects phantom's target/reference/position/duty/DO0/runner defaults |
 
 Sine equations are `offset0 + amplitude0*sin(2πt/T)` and
 `offset1 + amplitude1*sin(2πt/T + phase)`. One period is prepared outside RT and

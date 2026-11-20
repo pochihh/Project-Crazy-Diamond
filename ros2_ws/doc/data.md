@@ -23,7 +23,8 @@ part of the realtime signal catalog.
 Files are written outside RT to `recordings/YYYY-MM-DD_HH-mm-ss.csv`, using Pi
 local time. A collision adds `_1`, `_2`, etc.; no file is overwritten. CSV comments
 include timezone offset, project, period, calibration, origin, bounds and profile.
-Select controller gain/limiter signals to preserve live parameter changes per row.
+The web logger groups axis measurements, host status, I/O and DSP diagnostics.
+Controller tuning fields remain available to explicit ROS recording requests.
 Stop closes and flushes files before download. DSP reset closes the current segment.
 A runner fault closes its associated recording. An independent logger can continue
 recording valid fault-state feedback until explicitly stopped. Closed recordings
@@ -104,3 +105,11 @@ interrupts it when the project's `disarm_on_deadline_miss` policy is true; other
 the next row runs on the next tick, stretching elapsed timing without skipping
 rows or catching up with bursts. DSP disarm/recovery still follows the normal
 bridge gate. Every reported overrun/missed period remains logged under either policy.
+
+
+After a successful CSV load, the data server publishes `/data/csv_preview`
+(`interfaces/msg/CsvPreview`, reliable, transient local depth 1). It contains
+per-channel minima and maxima over at most 256 consecutive row groups.
+The Data page matches the preview to the loaded bridge program ID. Channel
+checkboxes affect only this view. A direct generated program has no CSV preview.
+Reload a CSV to regenerate its preview after the data service restarts.

@@ -1,3 +1,4 @@
+import { deployedNodes, dspView, peakLevel, topicRows } from './instruments';
 import './style.css';
 import {dataTools, type DataState} from './data';
 import { command } from './command';
@@ -117,7 +118,37 @@ async function getJSON(path: string) { const controller = new AbortController();
 finally {
     clearTimeout(timer);
 } }
-function setMeter(id: string, value: number | null, label?: string) { const element = $(id); text(`${id}-value`, label ?? (value === null ? '—' : `${value.toFixed(1)}%`)); element.setAttribute('aria-valuenow', String(Math.max(0, Math.min(100, value ?? 0)))); element.setAttribute('aria-valuetext', label ?? (value === null ? 'Unavailable' : `${value.toFixed(1)} percent`)); element.querySelector<HTMLElement>('i')!.style.width = `${Math.max(0, Math.min(100, value ?? 0))}%`; }
+const meters = new Map<string, {element: HTMLElement; value: number; peak: number; at: number}>();
+function setMeter(id: string, value: number | null, label?: string) {
+    const element = $(id), now = performance.now();
+    const current = Math.min(100, Math.max(0, value ?? 0));
+    const previous = meters.get(id);
+    const peak = previous && value !== null ? peakLevel(previous.peak, current, now - previous.at) : current;
+    meters.set(id,{element, value:current, peak, at:now});
+    const reading = label ?? (value === null ? '—' : `${value.toFixed(1)}%`);
+    text(`${id}-value`, reading);
+    element.setAttribute('aria-valuenow', String(current));
+    element.setAttribute('aria-valuetext', reading);
+    element.style.setProperty('--level', current + '%');
+    element.style.setProperty('--peak', peak + '%');
+}
+function decayMeters(now: number) {
+    for (const m of meters.values()) {
+        if (m.peak <= m.value || now <= m.at) continue;
+        m.peak = peakLevel(m.peak, m.value, now - m.at);
+        m.at = now;
+        m.element.style.setProperty('--peak', m.peak + '%');
+    }
+}
+function disclosure(id: string, content: string) {
+    $(id).onclick = () => {
+        const body = $(content);
+        body.hidden = !body.hidden;
+        $(id).setAttribute('aria-expanded', String(!body.hidden));
+    };
+}
+disclosure('dsp-expand','dsp-details');
+for(let axis=0;axis<2;axis++) disclosure(`expand-${axis}`,`axis-body-${axis}`);
 function bounds(a: number) { return state?.control_mode?.[a] === 1 ? [-100 * (state.duty_limit[a] ?? 1), 100 * (state.duty_limit[a] ?? 1)] : [state?.minimum_mm?.[a] ?? -50, state?.maximum_mm?.[a] ?? 50]; }
 async function flushTargets() { if (sendingAxis >= 0)
     return; try {
@@ -163,12 +194,14 @@ for (let a = 0; a < 2; a++) {
 }
 for (const event of ['pointerup', 'pointercancel', 'blur'])
     window.addEventListener(event, () => activeInputs.clear());
-$<HTMLInputElement>('system-enable').onchange = e => void act('system', 0, 0, (e.target as HTMLInputElement).checked);
+$('dsp-start').onclick = () => void act('system', 0, 0, true);
+$('host-clear').onclick = () => void act('clear');
 $('stop').onclick = () => { pendingTargets.clear(); activeInputs.clear(); void act('stop'); };
 $('dsp-disarm').onclick = () => { pendingTargets.clear(); void act('dsp_disarm'); };
 $('dsp-clear').onclick = () => void act('dsp_clear');
 function closeTopics() { const sockets = [...topicSockets.values()]; topicSockets.clear(); sockets.forEach(ws => ws.close()); }
 document.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach(button => button.onclick = () => {
+    controllers.close();
     activeTab = button.dataset.tab!;
     data.tab(activeTab);
     document.querySelectorAll<HTMLElement>('[data-tab]').forEach(b => { const on = b === button; b.classList.toggle('active', on); if (on)
@@ -180,6 +213,7 @@ document.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach(button => but
     lastResourceUpdate = 0;
     closeTopics();
     $('workspace').scrollTop = 0;
+    window.scrollTo(0,0);
     if (activeTab === 'system') {
         void updateSystem();
         document.querySelectorAll<HTMLDetailsElement>('.topic[open]').forEach(openTopic);
@@ -189,18 +223,11 @@ function row(table: HTMLElement, cells: string[]) { const tr = document.createEl
 function render(s: State) {
     const live = (socketConnected || performance.now() - latestReceipt < 1000) && s.bridge_alive && s.connected;
     text('source', s.mock ? 'SIMULATED HARDWARE' : 'DSP 00 / PHYSICAL');
-    text('system-label', s.system_enabled ? 'ENABLED' : 'DISABLED');
-    $('system-label').classList.toggle('on', s.system_enabled);
-    $<HTMLInputElement>('system-enable').checked = !!s.system_enabled;
-    $<HTMLInputElement>('system-enable').disabled = !live || !!s.fault;
     $('fault').hidden = !s.fault;
     if (s.fault && $('fault').dataset.error !== s.fault) {
         $('fault').dataset.error = s.fault;
         $('fault').replaceChildren(document.createTextNode(`${s.fault} `));
-        const b = document.createElement('button');
-        b.textContent = 'CLEAR HOST FAULT';
-        b.onclick = () => void act('clear');
-        $('fault').append(b);
+        $('fault').append(' · See DSP actions on Dashboard');
     }
     for (let a = 0; a < 2; a++) {
         const enabled = !!s.system_enabled && !!s.axis_enabled?.[a] && !s.fault, pwm = s.control_mode?.[a] === 1;
@@ -242,21 +269,25 @@ function render(s: State) {
         }
         const duty = 100 * (s.dsp.duty?.[a] ?? 0);
         setMeter(`duty-meter-${a}`, live ? Math.abs(duty) : null, live ? `${duty.toFixed(1)}%` : '—');
-        text(`error-label-${a}`, pwm ? 'Duty target' : 'Position error');
-        text(`error-${a}`, live ? (pwm ? `${t.toFixed(1)}%` : `${(t - pos).toFixed(2)} mm`) : '—');
-        text(`controller-name-${a}`, pwm ? 'Direct PWM / duty' : s.controllers?.[a]?.type.toUpperCase() ?? 'PID');
-        text(`controller-note-${a}`, pwm ? 'Open-loop output. No position hold.' : `${s.controllers?.[a]?.id ?? 'Working copy'} · live parameter tuning`);
+        text(`error-label-${a}`, pwm ? 'Duty error' : 'Error');
+        text(`error-${a}`, live ? (pwm ? `${(t-duty).toFixed(1)}%` : `${(t - pos).toFixed(2)} mm`) : '—');
+        text(`target-read-${a}`, live ? t.toFixed(2) + (pwm ? '%' : ' mm') : '—');
         $(`target-legend-${a}`).hidden = pwm;
         plots[a].showTarget = !pwm;
 
     }
     controllers.render(s,live);
-    text('axis-note', s.control_mode?.slice(0,2).includes(1) ? 'PWM holds the last duty until set to zero or disabled.' : 'Targets hold on release and through browser disconnect.');
     text('dsp-rate', `${(s.control_rate_hz ?? 0).toLocaleString()} Hz`);
     text('dsp-link', live ? 'SPI / 10 MHz' : 'OFFLINE');
     text('dsp-frames', s.dsp.sequence.toLocaleString());
-    const dspState=s.dsp.session===0?'UNSYNCHRONIZED':(['DISARMED','ACTIVE','FAULT'][s.dsp.state]??`UNKNOWN (${s.dsp.state})`);
+    const dspState = dspView(live, s.dsp.session, s.dsp.state, s.dsp.fault);
     text('dsp-status', dspState);
+    $('dsp-status').dataset.state = dspState;
+    $('dsp-start').hidden = dspState !== 'IDLE' || !!s.fault || s.system_enabled;
+    $('dsp-disarm').hidden = !live || !(s.system_enabled || s.dsp.arm_mask || dspState === 'RUNNING');
+    $('dsp-clear').hidden = dspState !== 'FAULT' || !!s.system_enabled || !!s.dsp.arm_mask;
+    $('host-clear').hidden = !live || !s.fault || !!s.dsp.fault || !!s.system_enabled || !!s.dsp.arm_mask;
+    text('dsp-host-errors', s.telemetry_errors);
     text('dsp-freshness', live ? `Live DSP feedback · ${s.feedback_age_ms.toFixed(1)} ms old` : 'DSP feedback unavailable · values below are cached');
     text('dsp-session', s.dsp.session.toString());
     text('dsp-ack', s.dsp.command_sequence.toString());
@@ -292,8 +323,9 @@ function renderResources(s: State, live: boolean) {
     rows.replaceChildren();
     for (let a = 0; a < 2; a++) {
         const meta = project.axes[a], tr = document.createElement('tr'), enabled = s.system_enabled && s.axis_enabled[a] && !s.fault;
-        tr.innerHTML = `<td>${escape(meta.name)}<small>DSP 00 / channel ${a}</small></td><td>${escape(meta.motor ?? `DC motor ${a}`)}<small>${escape(meta.encoder ?? `eQEP${a + 1}`)}</small></td><td>${(s.counts_per_mm?.[a] ?? 321.8467).toFixed(3)} counts/mm<small>${s.minimum_mm?.[a] ?? -50} … ${s.maximum_mm?.[a] ?? 50} mm</small></td><td>${live ? s.position_mm[a].toFixed(3) : '—'} mm<small>${live ? s.dsp.position[a] : '—'} counts</small></td><td>${live ? (s.dsp.duty[a] * 100).toFixed(1) : '—'}%<div class="meter"><i style="width:${Math.min(100, Math.abs(s.dsp.duty[a] * 100))}%"></i></div></td><td><span class="badge ${enabled ? 'on' : ''}">${enabled ? 'ENABLED' : 'DISABLED'}</span><small>${s.control_mode?.[a] === 1 ? 'PWM' : 'Position'}</small></td>`;
+        tr.innerHTML = `<td>${escape(meta.name)}<small>DSP 00 / channel ${a}</small></td><td>${escape(meta.motor ?? `DC motor ${a}`)}<small>${escape(meta.encoder ?? `eQEP${a + 1}`)}</small></td><td>${(s.counts_per_mm?.[a] ?? 321.8467).toFixed(3)} counts/mm<small>${s.minimum_mm?.[a] ?? -50} … ${s.maximum_mm?.[a] ?? 50} mm</small></td><td>${live ? s.position_mm[a].toFixed(3) : '—'} mm<small>${live ? s.dsp.position[a] : '—'} counts</small></td><td>${live ? (s.dsp.duty[a] * 100).toFixed(1) : '—'}%${meter(`resource-duty-${a}`, 'Output duty')}</td><td><span class="badge ${enabled ? 'on' : ''}">${enabled ? 'ENABLED' : 'DISABLED'}</span><small>${s.control_mode?.[a] === 1 ? 'PWM' : 'Position'}</small></td>`;
         rows.append(tr);
+        setMeter(`resource-duty-${a}`, live ? Math.abs(s.dsp.duty[a]*100) : null);
     }
     const transport = $('transport-rows');
     transport.replaceChildren();
@@ -365,6 +397,7 @@ finally {
 function animate(now: number) {
     const start = performance.now();
     frameCount++;
+    decayMeters(now);
     const stallThreshold = Math.max(150, 3000 / settings.streamHz);
     if (now - latestFresh > stallThreshold && now - lastSnapshotRequest > stallThreshold && !snapshotPending)
         void refreshSnapshot();
@@ -430,10 +463,10 @@ function openTopic(details: HTMLDetailsElement) {
         return;
     const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/topics?name=${encodeURIComponent(name)}`);
     topicSockets.set(name, ws);
-    const status = details.querySelector<HTMLElement>('.topic-stream-status')!, pre = details.querySelector('pre')!;
+    const status = details.querySelector<HTMLElement>('.topic-stream-status')!, body = details.querySelector('tbody')!;
     status.textContent = 'Connecting to topic…';
     ws.onmessage = event => { if (topicSockets.get(name) !== ws)
-        return; const payload = JSON.parse(event.data); status.textContent = payload.error ?? `VIEW / 10 Hz · ${payload.count} received · ${payload.age_ms === null ? 'waiting for publisher' : `${payload.age_ms} ms since message`}`; pre.textContent = payload.data === null ? 'Waiting for the next published message…' : JSON.stringify(payload.data, null, 2); };
+        return; const payload = JSON.parse(event.data); status.textContent = payload.error ?? `VIEW / 10 Hz · ${payload.count} received · ${payload.age_ms === null ? 'waiting for publisher' : `${payload.age_ms} ms since message`}`; topicRows(payload.data, body); };
     ws.onclose = () => { if (topicSockets.get(name) !== ws)
         return; topicSockets.delete(name); status.textContent = 'Stream disconnected'; setTimeout(() => { if (details.isConnected && details.open && activeTab === 'system')
         openTopic(details); }, 1500); };
@@ -461,7 +494,7 @@ function renderTopics(topics: {
         const details = document.createElement('details');
         details.className = 'topic';
         details.dataset.topic = topic.name;
-        details.innerHTML = `<summary><strong>${escape(topic.name)}</strong><small>${escape(topic.types.join(', '))}</small></summary><div class="topic-stream-status">Expand to subscribe</div><pre></pre>`;
+        details.innerHTML = `<summary><strong>${escape(topic.name)}</strong><small>${escape(topic.types.join(', '))}</small></summary><div class="topic-stream-status">Expand to subscribe</div><table class="topic-table"><tbody></tbody></table>`;
         details.addEventListener('toggle', () => { if (details.open)
             openTopic(details);
         else {
@@ -490,14 +523,21 @@ async function updateSystem() {
         text('host-gpu-detail', usage.gpu_percent === null || usage.gpu_percent === undefined ? 'Utilisation not exposed by this driver' : 'Driver-reported GPU utilisation');
         text('host-platform', `ROS 2 ${info.ros_distro} · ${info.kernel}`);
         const cores: (number | null)[] = usage.cpu_cores ?? [];
-        $('host-cores').innerHTML = cores.map((_, i) => {
-            // The physical bridge configures its FIFO worker on CPU 3; mock does not.
-            const pinned = i === 3 && !!state?.bridge_alive && !state.mock && state.fault !== 'Real-time scheduling or memory setup failed';
-            const isolated = (usage.isolated_cpus ?? []).includes(i);
-            return `<section class="panel core-card ${pinned ? 'rt-core' : ''}"><header><h3>CPU ${i}</h3><div>${isolated ? '<span class="badge on">ISOLATED</span>' : ''}${pinned ? '<span class="badge on" title="Physical control worker affinity: CPU 3">RT PINNED</span>' : ''}</div></header>${meter(`core-${i}`, 'Usage')}</section>`;
-        }).join('');
-        cores.forEach((value, i) => setMeter(`core-${i}`, value));
-        $('nodes').innerHTML = info.nodes.map((name: string) => { const bridge = name === 'bridge', web = name === 'ui_bridge'; return `<article class="panel node-card"><header><h3>/${escape(name)}</h3><span class="badge ${bridge ? 'on' : ''}">${bridge ? 'RT + NON-RT' : web ? 'NON-RT' : 'UNCLASSIFIED'}</span></header><p>${bridge ? 'CPU 3 · FIFO 80 worker; ROS / recorder on CPUs 0–2' : web ? 'HTTP, WebSocket and ROS adapter · CPUs 0–2' : 'Project node · execution timing not instrumented'}</p><div class="node-facts"><span>${bridge ? 'CONTROL RATE' : 'ROLE'}<strong>${bridge ? `${state?.control_rate_hz?.toLocaleString() ?? '—'} Hz` : web ? 'Web bridge' : 'ROS node'}</strong></span><span>LATE CYCLES<strong>${bridge ? state?.deadline_misses ?? '—' : '—'}</strong></span><span>${bridge ? 'MAX WORK' : 'EXECUTION'}<strong>${bridge ? `${state?.max_cycle_us.toFixed(1) ?? '—'} µs` : web ? 'Async / ROS' : 'Unknown'}</strong></span></div></article>`; }).join('');
+        const coreList = $('host-cores');
+        if (coreList.children.length !== cores.length) {
+            coreList.innerHTML = cores.map((_, i) => `<div class="core-line"><div id="core-tags-${i}" class="core-tags"></div>${meter(`core-${i}`, `CPU ${i}`)}</div>`).join('');
+        }
+        cores.forEach((value, i) => {
+            const pinned = i === 3 && state?.bridge_alive && !state.mock && state.fault !== 'Real-time scheduling or memory setup failed';
+            text(`core-tags-${i}`, [(usage.isolated_cpus ?? []).includes(i) ? 'ISOLATED' : '', pinned ? 'RT PINNED' : ''].filter(Boolean).join(' · '));
+            setMeter(`core-${i}`, value);
+        });
+        const nodes = $('nodes');
+        nodes.replaceChildren();
+        for (const name of info.nodes as string[]) {
+            const [pkg, role] = deployedNodes[name] ?? ['—', 'Discovered ROS node'];
+            row(nodes, ['/' + name, pkg, role]);
+        }
         renderTopics(info.topics);
     }
     catch {

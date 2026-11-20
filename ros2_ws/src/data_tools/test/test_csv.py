@@ -13,3 +13,10 @@ def test_paths(tmp_path):
     assert library_path(tmp_path,'experiment.csv').parent==tmp_path
     for name in ['../a.csv','/tmp/a.csv','a.txt']:
         with pytest.raises(ValueError):library_path(tmp_path,name)
+
+
+def test_preview_retains_one_tick_pulse_and_final_short_bin():
+    from data_tools.csv_program import preview_bins
+    preview = preview_bins([12, 0], [0, 3, 1, -8, 0, 2, 0, 1, 1, 4], max_bins=2)
+    assert preview == dict(rows=5, rows_per_bin=3, channels=['do0', 'axis0_reference_mm'],
+                           minimum=[0, -8, 0, 1], maximum=[1, 3, 1, 4])

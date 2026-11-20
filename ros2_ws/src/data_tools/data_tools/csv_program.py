@@ -56,3 +56,19 @@ def library_path(directory, name):
     if path.is_symlink():
         raise ValueError('Program symlinks are not supported')
     return path
+
+
+def preview_bins(channels, values, max_bins=256):
+    width = len(channels)
+    rows = len(values) // width
+    stride = (rows + max_bins - 1) // max_bins
+    low, high = [], []
+    for start in range(0, rows, stride):
+        end = min(rows, start + stride) * width
+        for column in range(width):
+            samples = values[start * width + column:end:width]
+            low.append(min(samples))
+            high.append(max(samples))
+    names = {number: name for name, number in COMMANDS.items()}
+    return dict(rows=rows, rows_per_bin=stride, channels=[names[c] for c in channels],
+                minimum=low, maximum=high)

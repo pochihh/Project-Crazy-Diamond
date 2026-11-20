@@ -1,8 +1,10 @@
 import os
 from pathlib import Path
 import rclpy
+from rclpy.qos import QoSProfile, DurabilityPolicy
+from interfaces.msg import CsvPreview
 from interfaces.srv import LoadCsv, LoadProgram, ListPrograms
-from data_tools.csv_program import parse_csv, library_path, MAX_BYTES
+from data_tools.csv_program import parse_csv, library_path, preview_bins, MAX_BYTES
 from data_tools.ros_client import Operations
 
 
@@ -11,6 +13,8 @@ class DataServer(Operations):
         super().__init__('data_server')
         self.directory = Path(self.declare_parameter('program_directory', 'data/programs').value)
         self.directory.mkdir(parents=True, exist_ok=True)
+        self.preview = self.create_publisher(CsvPreview, '/data/csv_preview',
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.busy = False
         self.loader = self.create_client(LoadProgram, '/data/program', callback_group=self.group)
         self.create_service(LoadCsv, '/data/load_csv', self.load, callback_group=self.group)
@@ -46,7 +50,10 @@ class DataServer(Operations):
                 temporary = path.with_suffix('.csv.tmp')
                 temporary.write_text(content)
                 os.replace(temporary, path)
+            preview = CsvPreview(**preview_bins(channels, values))
             result = await self.request(self.loader, LoadProgram.Request(name=path.name, channels=channels, values=values))
+            preview.program_id = result.command_id
+            self.preview.publish(preview)
             response.accepted = True
             response.command_id = result.command_id
             response.rows = len(values)//len(channels)
