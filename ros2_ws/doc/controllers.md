@@ -108,7 +108,8 @@ The RT bridge keeps a fixed ring of 64 outgoing commands indexed by sequence, ch
 |---|---|
 | `dsp_session`, `dsp_command_sequence`, `dsp_sequence` | Session, acknowledged command, and snapshot identifiers from the DSP |
 | `host_tick`, `ack_host_tick`, `ack_matched` | Receiving Pi iteration, originating Pi iteration, and whether an exact command match was available. Pi tick numbers restart with the bridge. |
-| `ctrl_input_sequence` | Earlier DSP snapshot available when the Pi prepared the acknowledged command |
+| `ctrl_input_session`, `ctrl_input_sequence` | Session and earlier DSP snapshot available when the Pi prepared the acknowledged command |
+| `axisN_ctrl_type`, `axisN_ctrl_revision` | Controller implementation and configuration revision that produced the acknowledged trace |
 | `ack_operation`, `ack_arm_mask`, `axisN_ack_sent_duty`, `ack_do_mask`, `ack_ao0_raw`, `ack_ao1_raw` | Actual outgoing SPI command fields. Use the DSP output channels for applied outputs. |
 | `axisN_ctrl_valid` | A matched control-cycle command for this enabled position controller, with healthy DSP feedback. Direct PWM, ARM and DISARM have no active feedback-controller trace. |
 | `axisN_ctrl_r_mm`, `axisN_ctrl_y_mm`, `axisN_ctrl_error_counts` | Reference, feedback used in computation, and their difference in encoder counts |

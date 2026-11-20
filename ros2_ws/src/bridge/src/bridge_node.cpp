@@ -273,9 +273,9 @@ private:
         program->exposure=std::llround(config.parameters[3]*kRateHz);
         program->recovery=std::llround(config.parameters[4]*kRateHz);
         const auto prefix="axis"+std::to_string(axis)+"_";
-        std::vector<std::string> signals={"step_tick","host_tick","ack_matched","ack_host_tick","dsp_session","dsp_sequence","dsp_command_sequence","ctrl_input_sequence","dropped_samples","dsp_fault","dsp_arm_mask","digital_in","digital_out","analog_valid","analog_out_valid","encoder_valid","ao0_raw","ao1_raw"};
+        std::vector<std::string> signals={"step_tick","host_tick","ack_matched","ack_host_tick","dsp_session","dsp_sequence","dsp_command_sequence","ctrl_input_session","ctrl_input_sequence","dropped_samples","dsp_fault","dsp_arm_mask","digital_in","digital_out","analog_valid","analog_out_valid","encoder_valid","ao0_raw","ao1_raw"};
         for(unsigned i=0;i<6;i++)signals.push_back("ai"+std::to_string(i)+"_raw");
-        for(const auto* suffix:{"ctrl_valid","ctrl_r_mm","ctrl_y_mm","ctrl_error_counts","ctrl_kp","ctrl_u_duty",
+        for(const auto* suffix:{"ctrl_valid","ctrl_type","ctrl_revision","ctrl_r_mm","ctrl_y_mm","ctrl_error_counts","ctrl_kp","ctrl_u_duty",
                                 "ctrl_u_im_duty","ctrl_u_g_duty","requested_duty","output_duty","position_mm","raw_counts"})
             signals.push_back(prefix+suffix);
         Command c{};c.op=Op::step_start;c.axis=axis;c.value=1;c.enabled=true;c.program=program.get();

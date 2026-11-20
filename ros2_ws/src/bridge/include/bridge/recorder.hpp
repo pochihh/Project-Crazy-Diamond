@@ -94,6 +94,7 @@ inline std::vector<Signal> signal_catalog() {
     PCD_SIGNAL("ack_do_mask","mask","Digital I/O",s.acknowledged.digital_out);
     PCD_SIGNAL("ack_ao0_raw","code","Analog I/O",s.acknowledged.analog_out[0]);
     PCD_SIGNAL("ack_ao1_raw","code","Analog I/O",s.acknowledged.analog_out[1]);
+    PCD_SIGNAL("ctrl_input_session","id","DSP",s.acknowledged.input_session);
     PCD_SIGNAL("ctrl_input_sequence","count","DSP",s.acknowledged.input_sequence);
     PCD_SIGNAL("step_tick","tick","Runner",s.acknowledged.experiment_tick);
 #undef PCD_SIGNAL
@@ -101,6 +102,10 @@ inline std::vector<Signal> signal_catalog() {
         const auto prefix="axis"+std::to_string(a)+"_",group="Axis "+std::to_string(a);
         add(prefix+"ack_sent_duty","duty",group,[a](const Sample& s){return s.acknowledged.sent_duty[a];});
         add(prefix+"ctrl_valid","bool",group,[a](const Sample& s){return (s.acknowledged.valid_mask>>a)&1;});
+        add(prefix+"ctrl_revision","count",group,[a](const Sample& s){return s.acknowledged.axes[a].revision;});
+        out.push_back({prefix+"ctrl_type","text",group,{},[a](const Sample& s){
+            return s.acknowledged.valid_mask&(1U<<a)?std::string(controller_types[s.acknowledged.axes[a].type].id):std::string{};
+        }});
         auto trace=[&](const char* name,const char* unit,double ControllerSignals::*member) {
             add(prefix+name,unit,group,[a,member](const Sample& s){return s.acknowledged.axes[a].*member;});
         };

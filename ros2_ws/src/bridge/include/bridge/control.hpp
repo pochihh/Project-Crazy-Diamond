@@ -248,7 +248,7 @@ private:
 public:
     Values duty() {ControlFrame frame;return duty(frame);}
     Values duty(ControlFrame& frame) {
-        frame={};frame.input_sequence=state.telemetry.sequence;frame.host_tick=state.host_tick;frame.experiment_tick=experiment_tick;
+        frame={};frame.input_session=state.telemetry.session;frame.input_sequence=state.telemetry.sequence;frame.host_tick=state.host_tick;frame.experiment_tick=experiment_tick;
         if(experiment_tick>=0)frame.record=state.record_id;
         Values result{};
         for(unsigned a=0;a<kAxes;a++) {
@@ -258,7 +258,9 @@ public:
                 continue;
             }
             const double output=controllers[a].step(state.target[a],state.position[a],state.scale[a],dt,injection[a]);
-            frame.axes[a]=controllers[a].signals;frame.valid_mask|=1U<<a;
+            frame.axes[a]=controllers[a].signals;
+            frame.axes[a].type=controllers[a].config.type;frame.axes[a].revision=state.controller_revision[a];
+            frame.valid_mask|=1U<<a;
             state.reference[a]=controllers[a].reference_mm;
             if(!std::isfinite(output)) {fail(Error::numeric);return {};}
             result[a]=static_cast<float>(std::clamp(output,-controllers[a].limit,controllers[a].limit));

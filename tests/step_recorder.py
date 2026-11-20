@@ -63,6 +63,8 @@ try:
         assert len(rows) == 190
         for tick, row in enumerate(rows):
             assert int(row['step_tick']) == tick and int(row['ack_matched']) == int(row['axis0_ctrl_valid']) == 1
+            assert row['ctrl_input_session'] == row['dsp_session']
+            assert row['axis0_ctrl_type'] == 'step_recorder' and int(row['axis0_ctrl_revision']) == revision
             assert int(row['ctrl_input_sequence']) < int(row['dsp_sequence'])
             assert 0 < int(row['ack_host_tick']) <= int(row['host_tick'])
             assert float(row['axis0_ctrl_r_mm']) == 0
