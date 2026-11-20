@@ -2,14 +2,15 @@ import {csvPreview} from './csvPreview';
 type Signal={name:string;unit:string;group:string;numeric:boolean};
 type Preview={timestamp_us:number;sequence:number;latest:number[];minimum:number[];maximum:number[]};
 import {SignalPlot, colorCheck, type PlotFrame, type Trace} from './signalPlot';
-export type DataState={csv_preview_id:number;control_rate_hz:number;recording:boolean;recording_file:string;recorded_signals:string[];program_name:string;program_id:number;program_rows:number;runner_state:number;runner_row:number;runner_cycles:number;runner_completion:string;runner_error:string;runner_axis_mask:number;robot?:{version:number;id:string;name:string;panel_url:string}|null};
+export type DataState={position_unit:string[];reverse_direction:boolean[];csv_preview_id:number;control_rate_hz:number;recording:boolean;recording_file:string;recorded_signals:string[];program_name:string;program_id:number;program_rows:number;runner_state:number;runner_row:number;runner_cycles:number;runner_completion:string;runner_error:string;runner_axis_mask:number;robot?:{version:number;id:string;name:string;panel_url:string}|null};
 const el=<T extends HTMLElement=HTMLElement>(id:string)=>document.getElementById(id) as T;
 export async function dataRequest(action:string,body:object){const r=await fetch(`/api/data/${action}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(35000)});const d=await r.json();if(!r.ok)throw Error(d.detail||'Data request failed');return d;}
 export function dataTools(){
     const loggerPlot=new SignalPlot(el('logger-plot'),'Selected logger signals over the last 10 seconds');
     const runnerPlot=new SignalPlot(el('program-plot'),'Selected CSV commands over program time');
     const history:PlotFrame[]=[];
-    let recording=false;
+    let recording=false, calibration='';
+    let catalogVersion=0;
     let catalog:Signal[]=[],busy=false,visible=false,ws:WebSocket|undefined,lastSequence=-1,lastTime=0,lastRobot='',recordKey='';
     const selected=new Set<string>();
     const checks=new Map<string,HTMLInputElement>();
@@ -49,9 +50,11 @@ export function dataTools(){
         return 'DSP / System';
     }
     async function signals() {
+        const version=++catalogVersion;
         const r=await fetch('/api/data/signals');const d=await r.json();
+        if(version!==catalogVersion)return;
         if(!r.ok)throw Error(d.detail);
-        if(!catalog.length)for(const field of d.signals as Signal[]) {
+        if(!catalog.length && !selected.size)for(const field of d.signals as Signal[]) {
             if(/^(do0|axis[01]_((reference|position)_(mm|deg)|output_duty))$/.test(field.name))selected.add(field.name);
         }
         catalog=d.signals; // Preview vectors use the complete catalog's indices.
@@ -137,7 +140,19 @@ export function dataTools(){
             loggerPlot.theme(theme);runnerPlot.theme(theme);
         },
         tab(name:string){visible=name==='data';if(visible){connect();if(!catalog.length)void signals().catch(e=>message(String(e)));}else{const old=ws;ws=undefined;old?.close();}if(visible)void files().catch(e=>message(String(e)));},
-        render(s:DataState,live:boolean){const owned=s.runner_state===1||s.runner_state===2;
+        render(s:DataState,live:boolean){
+            const current=s.position_unit.join(',')+'/'+s.reverse_direction.join(',');
+            if(calibration && current!==calibration) {
+                ++catalogVersion;
+                for(const old of [...selected]) {
+                    const match=/^axis(\d+)_(.+)_(mm|deg)(_s)?$/.exec(old);
+                    if(match){selected.delete(old);selected.add(`axis${match[1]}_${match[2]}_${s.position_unit[Number(match[1])]}${match[4]??''}`);}
+                }
+                catalog=[];history.length=0;recordKey='';lastSequence=-1;lastTime=0;
+                if(visible)void signals().catch(e=>message(String(e)));
+            }
+            calibration=current;
+            const owned=s.runner_state===1||s.runner_state===2;
             if(visible)void showCsv(s.program_id,s.program_name,s.csv_preview_id,s.control_rate_hz);
             if(recording!==s.recording){recording=s.recording;el('logger-channels').querySelectorAll('input').forEach(c=>c.disabled=recording);}
             if(!s.recording) recordKey='';
