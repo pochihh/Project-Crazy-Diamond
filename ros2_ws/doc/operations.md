@@ -99,12 +99,12 @@ wait still runs. `tests/phantom_startup.py` checks this at nonzero raw encoder c
 
 Open the PCD UI at `http://<pi-address>:8000/`. Axis controls are independent of the
 optional robot panel. Expand an axis to use its slider, numeric target, zero or plot.
-The gear opens that axis's settings in the right column. The light meter band
+The settings column stays visible while navigating. It initially shows Web settings. An axis gear selects that axis for tuning, and Settings returns to the web preferences. On narrow screens the column docks below the workspace. The light meter band
 tracks recent magnitude peaks and falls at 25 percentage points per second.
 
 The DSP card shows INIT until feedback is synchronized, IDLE for disarmed, RUNNING
 for active, and FAULT for a DSP fault. Start uses the bridge system-enable command.
-Previously selected axes can become enabled on Start. Disarm uses DSP disarm.
+Previously selected axes can become enabled on Start. The DSP Stop button sends the existing DSP disarm command.
 The expanded table distinguishes invalid commands received by the DSP from Pi
 telemetry/link errors. Pi fault clearing has its own action.
 

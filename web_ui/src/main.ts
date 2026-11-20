@@ -3,7 +3,7 @@ import './style.css';
 import {dataTools, type DataState} from './data';
 import { command } from './command';
 import { PositionPlot } from './plot';
-import { layout, meter, openSettingsPanel } from './layout';
+import { layout, meter } from './layout';
 import { controllerPanel, type ControllerState } from './controllers';
 import { defaults, readSettings, type Settings } from './settings';
 type State = ControllerState & DataState & {
@@ -197,11 +197,10 @@ for (const event of ['pointerup', 'pointercancel', 'blur'])
 $('dsp-start').onclick = () => void act('system', 0, 0, true);
 $('host-clear').onclick = () => void act('clear');
 $('stop').onclick = () => { pendingTargets.clear(); activeInputs.clear(); void act('stop'); };
-$('dsp-disarm').onclick = () => { pendingTargets.clear(); void act('dsp_disarm'); };
+$('dsp-stop').onclick = () => { pendingTargets.clear(); void act('dsp_disarm'); };
 $('dsp-clear').onclick = () => void act('dsp_clear');
 function closeTopics() { const sockets = [...topicSockets.values()]; topicSockets.clear(); sockets.forEach(ws => ws.close()); }
 document.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach(button => button.onclick = () => {
-    controllers.close();
     activeTab = button.dataset.tab!;
     data.tab(activeTab);
     document.querySelectorAll<HTMLElement>('[data-tab]').forEach(b => { const on = b === button; b.classList.toggle('active', on); if (on)
@@ -213,7 +212,6 @@ document.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach(button => but
     lastResourceUpdate = 0;
     closeTopics();
     $('workspace').scrollTop = 0;
-    $('settings-panel').style.removeProperty('--rail-offset');
     window.scrollTo(0,0);
     if (activeTab === 'system') {
         void updateSystem();
@@ -285,7 +283,7 @@ function render(s: State) {
     text('dsp-status', dspState);
     $('dsp-status').dataset.state = dspState;
     $('dsp-start').hidden = dspState !== 'IDLE' || !!s.fault || s.system_enabled;
-    $('dsp-disarm').hidden = !live || !(s.system_enabled || s.dsp.arm_mask || dspState === 'RUNNING');
+    $('dsp-stop').hidden = !live || !(s.system_enabled || s.dsp.arm_mask || dspState === 'RUNNING');
     $('dsp-clear').hidden = dspState !== 'FAULT' || !!s.system_enabled || !!s.dsp.arm_mask;
     $('host-clear').hidden = !live || !s.fault || !!s.dsp.fault || !!s.system_enabled || !!s.dsp.arm_mask;
     text('dsp-host-enabled', s.system_enabled ? 'Enabled' : 'Disabled');
@@ -302,7 +300,7 @@ function render(s: State) {
     text('dsp-encoder-errors', s.dsp.encoder_errors);
     text('dsp-encoder-valid', `0x${s.dsp.encoder_valid.toString(16)}`);
     text('dsp-poll', `${s.dsp.cpu2_max_poll_us} µs`);
-    $<HTMLButtonElement>('dsp-disarm').disabled=!s.bridge_alive;
+    $<HTMLButtonElement>('dsp-stop').disabled=!s.bridge_alive;
     $<HTMLButtonElement>('dsp-clear').disabled=!live || s.system_enabled || s.dsp.arm_mask!==0;
     text('record-status', s.recording ? '● RECORDING' : 'IDLE');
     $('record-status').classList.toggle('recording', s.recording);
@@ -563,17 +561,6 @@ for (const [id, key] of [['setting-theme', 'theme'], ['setting-plot-fps', 'plotF
 }
 $<HTMLInputElement>('setting-performance').checked = settings.showPerformance;
 $<HTMLInputElement>('setting-performance').onchange = () => { settings.showPerformance = $<HTMLInputElement>('setting-performance').checked; saveSettings(); };
-function showSettings(open: boolean) {
-    controllers.close();
-    if (open) openSettingsPanel($('settings-panel'));
-    else $('settings-panel').hidden = true;
-    $('settings-button').setAttribute('aria-expanded', String(open));
-    $('settings-button').classList.toggle('active', open);
-}
-$('settings-button').onclick = () => showSettings($('settings-panel').hidden);
-$('settings-close').onclick = () => showSettings(false);
-window.addEventListener('keydown', e => { if (e.key === 'Escape')
-    showSettings(false); });
 darkMedia.addEventListener('change', applySettings);
 async function loadProject() { try {
     project = await getJSON('/api/project');

@@ -21,7 +21,7 @@ when no supported manifest has arrived for two seconds. Stop All remains outside
 the iframe. There is no runtime component loader, schema-driven panel editor or
 robot kinematics code in the PCD bundle. Panels can report their content height on load and resize with
 `parent.postMessage({type: 'pcd.panel.size', height}, '*')`. PCD accepts height
-messages only from the embedded window and its registered origin.
+messages only from the embedded window and its registered origin. Phantom measures a content wrapper independent of the iframe viewport and leaves scrolling to the dashboard when embedded. Opening the robot panel directly uses normal page scrolling.
 
 The panel's HTTP endpoints route to its robot ROS API. The Data page
 observes the bridge's actual state, including operations started elsewhere. If
