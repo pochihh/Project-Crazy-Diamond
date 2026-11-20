@@ -1,15 +1,23 @@
 # Step Recorder
 
 ```mermaid
-flowchart TD
-    r["r = 0 mm"] --> e(("−"))
-    e -->|"error in counts"| p["P · tunable Kp and motor sign"]
-    p -->|"u"| sum(("+"))
-    step["Baseline → step → recovery"] -->|"u_im · signed duty"| sum
-    sum --> cap["Axis duty cap"]
-    cap -->|"u_g"| motor["DSP output → motor G"]
-    motor -->|"position"| y["Encoder and calibration"]
-    y -->|"−y"| e
+block-beta
+    columns 9
+    space:4 inj["Step u_im"] space:4
+    r["r = 0"] err(("Σ")) p["P · Kp"] space mix(("+")) cap["Duty cap"] space g["G · motor"] y["y"]
+    space neg(("−y")) space:6 encoder["Encoder"]
+    r --> err
+    err -- "e" --> p
+    p -- "u" --> mix
+    inj --> mix
+    mix --> cap
+    cap -- "u_g" --> g
+    g --> y
+    y --> encoder
+    encoder --> neg
+    neg --> err
+    classDef signal fill:transparent,stroke:none
+    class r,y signal
 ```
 
 The step is in signed motor duty units and is added after feedback polarity. The motor input is the sum after applying the axis duty cap. Kp = 0 gives open-loop excitation. The DSP reports its own applied duty.
