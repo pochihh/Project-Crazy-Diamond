@@ -44,7 +44,9 @@ export function dataTools(){
             const title=groupOf(field), fields=groups.get(title)??[];
             fields.push(field);groups.set(title,fields);
         }
-        for(const [title,fields] of groups) {
+        const groupNames = [...groups.keys()].sort((a,b) => Number(b.startsWith('Axis ')) - Number(a.startsWith('Axis ')) || a.localeCompare(b));
+        for(const title of groupNames) {
+            const fields=groups.get(title)!;
             const section=document.createElement('fieldset'),legend=document.createElement('legend');
             const label=document.createElement('label'), all=document.createElement('input');
             all.type='checkbox';label.append(all,title);legend.append(label);section.append(legend);

@@ -3,7 +3,7 @@ import './style.css';
 import {dataTools, type DataState} from './data';
 import { command } from './command';
 import { PositionPlot } from './plot';
-import { layout, meter } from './layout';
+import { layout, meter, openSettingsPanel } from './layout';
 import { controllerPanel, type ControllerState } from './controllers';
 import { defaults, readSettings, type Settings } from './settings';
 type State = ControllerState & DataState & {
@@ -213,6 +213,7 @@ document.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach(button => but
     lastResourceUpdate = 0;
     closeTopics();
     $('workspace').scrollTop = 0;
+    $('settings-panel').style.removeProperty('--rail-offset');
     window.scrollTo(0,0);
     if (activeTab === 'system') {
         void updateSystem();
@@ -287,6 +288,7 @@ function render(s: State) {
     $('dsp-disarm').hidden = !live || !(s.system_enabled || s.dsp.arm_mask || dspState === 'RUNNING');
     $('dsp-clear').hidden = dspState !== 'FAULT' || !!s.system_enabled || !!s.dsp.arm_mask;
     $('host-clear').hidden = !live || !s.fault || !!s.dsp.fault || !!s.system_enabled || !!s.dsp.arm_mask;
+    text('dsp-host-enabled', s.system_enabled ? 'Enabled' : 'Disabled');
     text('dsp-host-errors', s.telemetry_errors);
     text('dsp-freshness', live ? `Live DSP feedback · ${s.feedback_age_ms.toFixed(1)} ms old` : 'DSP feedback unavailable · values below are cached');
     text('dsp-session', s.dsp.session.toString());
@@ -302,7 +304,6 @@ function render(s: State) {
     text('dsp-poll', `${s.dsp.cpu2_max_poll_us} µs`);
     $<HTMLButtonElement>('dsp-disarm').disabled=!s.bridge_alive;
     $<HTMLButtonElement>('dsp-clear').disabled=!live || s.system_enabled || s.dsp.arm_mask!==0;
-    $('dsp-status').classList.toggle('on', live);
     text('record-status', s.recording ? '● RECORDING' : 'IDLE');
     $('record-status').classList.toggle('recording', s.recording);
     $<HTMLButtonElement>('record-start').disabled = !live || s.recording;
@@ -323,9 +324,10 @@ function renderResources(s: State, live: boolean) {
     rows.replaceChildren();
     for (let a = 0; a < 2; a++) {
         const meta = project.axes[a], tr = document.createElement('tr'), enabled = s.system_enabled && s.axis_enabled[a] && !s.fault;
-        tr.innerHTML = `<td>${escape(meta.name)}<small>DSP 00 / channel ${a}</small></td><td>${escape(meta.motor ?? `DC motor ${a}`)}<small>${escape(meta.encoder ?? `eQEP${a + 1}`)}</small></td><td>${(s.counts_per_mm?.[a] ?? 321.8467).toFixed(3)} counts/mm<small>${s.minimum_mm?.[a] ?? -50} … ${s.maximum_mm?.[a] ?? 50} mm</small></td><td>${live ? s.position_mm[a].toFixed(3) : '—'} mm<small>${live ? s.dsp.position[a] : '—'} counts</small></td><td>${live ? (s.dsp.duty[a] * 100).toFixed(1) : '—'}%${meter(`resource-duty-${a}`, 'Output duty')}</td><td><span class="badge ${enabled ? 'on' : ''}">${enabled ? 'ENABLED' : 'DISABLED'}</span><small>${s.control_mode?.[a] === 1 ? 'PWM' : 'Position'}</small></td>`;
+        tr.innerHTML = `<td>${escape(meta.name)}<small>DSP 00 / channel ${a}</small></td><td>${escape(meta.motor ?? `DC motor ${a}`)}<small>${escape(meta.encoder ?? `eQEP${a + 1}`)}</small></td><td>${(s.counts_per_mm?.[a] ?? 321.8467).toFixed(3)} counts/mm<small>${s.minimum_mm?.[a] ?? -50} … ${s.maximum_mm?.[a] ?? 50} mm</small></td><td>${live ? s.position_mm[a].toFixed(3) : '—'} mm<small>${live ? s.dsp.position[a] : '—'} counts</small></td><td>${meter(`resource-duty-${a}`, 'Output duty')}</td><td><span class="badge ${enabled ? 'on' : ''}">${enabled ? 'ENABLED' : 'DISABLED'}</span><small>${s.control_mode?.[a] === 1 ? 'PWM' : 'Position'}</small></td>`;
         rows.append(tr);
-        setMeter(`resource-duty-${a}`, live ? Math.abs(s.dsp.duty[a]*100) : null);
+        const duty = s.dsp.duty[a] * 100;
+        setMeter(`resource-duty-${a}`, live ? Math.abs(duty) : null, live ? `${duty.toFixed(1)}%` : '—');
     }
     const transport = $('transport-rows');
     transport.replaceChildren();
@@ -561,7 +563,13 @@ for (const [id, key] of [['setting-theme', 'theme'], ['setting-plot-fps', 'plotF
 }
 $<HTMLInputElement>('setting-performance').checked = settings.showPerformance;
 $<HTMLInputElement>('setting-performance').onchange = () => { settings.showPerformance = $<HTMLInputElement>('setting-performance').checked; saveSettings(); };
-function showSettings(open: boolean) { controllers.close(); $('settings-panel').hidden = !open; $('settings-button').setAttribute('aria-expanded', String(open)); $('settings-button').classList.toggle('active', open); }
+function showSettings(open: boolean) {
+    controllers.close();
+    if (open) openSettingsPanel($('settings-panel'));
+    else $('settings-panel').hidden = true;
+    $('settings-button').setAttribute('aria-expanded', String(open));
+    $('settings-button').classList.toggle('active', open);
+}
 $('settings-button').onclick = () => showSettings($('settings-panel').hidden);
 $('settings-close').onclick = () => showSettings(false);
 window.addEventListener('keydown', e => { if (e.key === 'Escape')

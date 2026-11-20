@@ -1,4 +1,5 @@
 import { command, type ControllerCommand } from './command';
+import { openSettingsPanel } from './layout';
 export type Profile = {id: string; type: string; parameter_names: string[]; parameter_values: number[]; slew_enabled: boolean; slew_rate_mm_s: number};
 type ControllerType = {type: string; label: string; parameter_names: string[]; parameter_units: string[]; defaults: number[]; minimum: number[]; maximum: number[]};
 export type ControllerState = {ui_instance?: string; ui_sequence?: number; controllers: Profile[]; controller_revision: number[]; control_rate_hz: number; system_enabled: boolean; axis_enabled: boolean[]; duty_limit: number[]; control_mode: number[]; fault: string};
@@ -132,7 +133,7 @@ export function controllerPanel() {
         el('controller-title').textContent = `AXIS ${a} / CONTROLLER`;
         document.getElementById('settings-panel')!.hidden = true;
         const web = document.getElementById('settings-button')!; web.setAttribute('aria-expanded','false'); web.classList.remove('active');
-        panel.hidden = false; panel.scrollIntoView({block:'nearest'}); paint(); void refresh().catch(e => feedback(String(e)));
+        openSettingsPanel(panel); paint(); void refresh().catch(e => feedback(String(e)));
     };
     return {render(s: ControllerState, connected: boolean){update(s);live=connected;paint();},close};
 }
