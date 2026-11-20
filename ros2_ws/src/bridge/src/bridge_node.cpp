@@ -206,6 +206,14 @@ private:
         Command c{}; c.axis=req.axis; c.value=req.value; c.enabled=req.enabled;
         if(c.axis>=kAxes||!std::isfinite(c.value)) {out.message="Invalid axis or non-finite value";return;}
         const auto& op=req.operation;
+        if(op=="step_start"){start_step(req.axis,req.controller_revision,out);return;}
+        if(op=="step_stop"){
+            drain();
+            if(!program_ || !program_->is_step() || program_->step_axis!=req.axis || !runner_.owns(latest_)) {
+                out.message="No active Step Recorder for this axis";return;
+            }
+            c.op=Op::runner_stop;c.record=latest_.program_id;enqueue(c,out);return;
+        }
         if(op=="mode") c.op=Op::mode;
         else if(op=="axis") c.op=Op::axis;
         else if(op=="system") c.op=Op::system;
@@ -222,7 +230,7 @@ private:
             try {
                 if(op=="controller_apply") {
                     c.op=Op::controller;c.controller=Profiles::parameters(req.controller_type,req.parameter_names,req.parameter_values);
-                    c.controller.slew_enabled=req.set_reference?req.slew_enabled:latest_.controllers[c.axis].slew_enabled;
+                    c.controller.slew_enabled=req.set_reference?req.slew_enabled:(c.controller.type!=step_recorder_type && latest_.controllers[c.axis].slew_enabled);
                     c.controller.slew_rate_mm_s=req.set_reference?req.slew_rate_mm_s:latest_.controllers[c.axis].slew_rate_mm_s;
                     if(!valid_controller(c.controller))throw std::runtime_error("Invalid reference processing parameters");
                 } else if(op=="profile_load") {
@@ -246,6 +254,38 @@ private:
             logger_command(r,out);return;
         } else {out.message="Unknown operation";return;}
         enqueue(c,out);
+    }
+    void start_step(unsigned axis,uint64_t revision,interfaces::srv::Command::Response& out) {
+        drain();
+        if(pending_program_ || runner_.owns(latest_) || recorder_->active() || latest_.command_id!=next_command_) {
+            out.message="Finish the current run or recording before starting a step";return;
+        }
+        const auto& config=latest_.controllers[axis];
+        if(!latest_.connected || latest_.fault!=Error::none || config.type!=step_recorder_type ||
+           latest_.controller_revision[axis]!=revision) {
+            out.message="Connect, apply Step Recorder and use its current controller revision";return;
+        }
+        auto program=std::make_unique<Program>();
+        program->id=next_command_+1;program->name="Step Recorder / axis "+std::to_string(axis);
+        program->step_axis=axis;program->axes=1U<<axis;program->channels={static_cast<uint8_t>(axis)};
+        program->revision=revision;program->amplitude=config.parameters[1];
+        program->baseline=std::llround(config.parameters[2]*kRateHz);
+        program->exposure=std::llround(config.parameters[3]*kRateHz);
+        program->recovery=std::llround(config.parameters[4]*kRateHz);
+        const auto prefix="axis"+std::to_string(axis)+"_";
+        std::vector<std::string> signals={"step_tick","host_tick","ack_matched","ack_host_tick","dsp_session","dsp_sequence","dsp_command_sequence","ctrl_input_sequence","dropped_samples","dsp_fault","dsp_arm_mask","digital_in","digital_out","analog_valid","analog_out_valid","encoder_valid","ao0_raw","ao1_raw"};
+        for(unsigned i=0;i<6;i++)signals.push_back("ai"+std::to_string(i)+"_raw");
+        for(const auto* suffix:{"ctrl_valid","ctrl_r_mm","ctrl_y_mm","ctrl_error_counts","ctrl_kp","ctrl_u_duty",
+                                "ctrl_u_im_duty","ctrl_u_g_duty","requested_duty","output_duty","position_mm","raw_counts"})
+            signals.push_back(prefix+suffix);
+        Command c{};c.op=Op::step_start;c.axis=axis;c.value=1;c.enabled=true;c.program=program.get();
+        c.check_stop=true;c.stop_count=latest_.stop_count;c.record=++record_id_;
+        try {recorder_->start(record_id_,signals,latest_,DIAMOND_PROJECT_ID,program->id);}
+        catch(const std::exception& e){out.message=e.what();return;}
+        enqueue(c,out);
+        if(!out.accepted){finish_recording();return;}
+        record_command_id_=program_command_id_=out.command_id;
+        pending_program_=std::move(program);
     }
     void finish_recording(){recorder_->finish();}
     template<class Response> void logger_command(const interfaces::srv::LoggerCommand::Request& req,Response& out) {
@@ -277,6 +317,7 @@ private:
         if(req.operation=="stop"){c.op=Op::runner_stop;enqueue(c,out);return;}
         if(req.operation!="start"){out.message="Unknown runner operation";return;}
         if(pending_program_||!program_||runner_.owns(latest_)||latest_.command_id!=next_command_){out.message="Load a program, stop any active run, and wait for pending commands";return;}
+        if(program_->is_step()){out.message="Use Start + record in the axis Step Recorder, or load a CSV";return;}
         if(req.completion!="hold"&&req.completion!="stop"&&req.completion!="loop"){out.message="Completion must be hold, stop or loop";return;}
         if(!latest_.connected||latest_.fault!=Error::none){out.message="Connect and clear the host fault before starting";return;}
         c.check_stop=true;c.stop_count=req.check_stop_count?req.expected_stop_count:latest_.stop_count;
@@ -403,6 +444,7 @@ private:
             } else realtime_ready=true;
         }
         Telemetry simulated{};
+        ControlHistory trace_history;
         std::array<double,6> mock_position{};
         uint16_t sent_mask=0;bool sent_active=false;
         auto scheduled=Clock::now(),next_open=scheduled+std::chrono::seconds(1),last_error_log=Clock::time_point{};
@@ -422,7 +464,7 @@ private:
             std::sort(pending.begin(),pending.begin()+commands,[](const Command& a,const Command& b){return a.order<b.order;});
             for(unsigned i=0;i<commands;i++) {
                 const auto& command=pending[i];
-                if(command.op==Op::runner_load||command.op==Op::runner_start||command.op==Op::runner_stop) {
+                if(command.op==Op::step_start||command.op==Op::runner_load||command.op==Op::runner_start||command.op==Op::runner_stop) {
                     core_.state.command_error=runner_.command(command,core_);core_.state.command_id=command.id;
                 } else if(runner_.conflicts(command,core_.state)) {
                     if(command.input){++core_.state.input_rejections;core_.state.input_error=Error::busy;core_.state.input_operation=command.op;core_.state.input_channel=command.axis;}
@@ -443,8 +485,13 @@ private:
             if(stop_.exchange(false)){runner_.stop(core_);core_.apply({Op::stop,0,0,false,core_.state.command_id});}
             if(link && !realtime_ready) core_.fail(Error::realtime);
             runner_.tick(core_);
-            const auto values=core_.duty();
+            core_.state.host_tick=iteration+1;
+            ControlFrame computed;
+            const auto values=core_.duty(computed);
+            core_.state.acknowledged={};
             const auto mask=core_.mask();
+            computed.arm_mask=mask;computed.digital_out=core_.state.digital_out;
+            computed.analog_out=core_.state.analog_out;computed.sent_duty=values;
             uint16_t operation=0;
             std::array<char,160> error{};
             try {
@@ -464,13 +511,15 @@ private:
                     for(unsigned a=0;a<kAxes;a++) {
                         // shortcut: deterministic first-order plant, use hardware for controller validation.
                         if(mask&(1U<<a)) {
-                            if(core_.state.mode[a]==1) mock_position[a]+=values[a]*core_.controllers[a].sign*50*dt*(core_.state.position_configured[a]?core_.state.scale[a]:1000);
+                            if(core_.state.mode[a]==1 || core_.controllers[a].config.type==step_recorder_type) mock_position[a]+=values[a]*core_.controllers[a].sign*50*dt*(core_.state.position_configured[a]?core_.state.scale[a]:1000);
                             else mock_position[a]+=(core_.state.zero[a]+core_.state.reference[a]*core_.state.scale[a]-mock_position[a])*0.08;
                         }
                         simulated.position[a]=static_cast<int32_t>(std::llround(mock_position[a]));
                         simulated.requested_duty[a]=simulated.duty[a]=values[a];
                     }
                     core_.receive(simulated);
+                    computed.operation=core_.state.system?PCD_CYCLE:PCD_DISARM;
+                    core_.state.acknowledged=computed;
                 } else if(link) {
                     const auto op=core_.dsp_clear_requested?PCD_CLEAR:!core_.state.system?PCD_DISARM:
                         (!sent_active||mask!=sent_mask)?PCD_ARM:PCD_CYCLE;
@@ -480,6 +529,13 @@ private:
                         std::llround(core_.state.zero[a]+core_.state.reference[a]*core_.state.scale[a])));
                     const auto telemetry=link->exchange(op,op==PCD_CYCLE?values:Values{},mask,references,
                         core_.state.digital_out,core_.state.analog_out);
+                    const auto& sent=link->last_command();
+                    computed.operation=sent.operation;
+                    std::copy_n(sent.duty,kAxes,computed.sent_duty.begin());
+                    if(sent.operation!=PCD_CYCLE) {
+                        computed.valid_mask=0;computed.axes={};computed.record=0;computed.experiment_tick=-1;
+                    }
+                    trace_history.put(sent.session,sent.sequence,computed);
                     for(unsigned a=0;a<kAxes;a++) if(!std::isfinite(telemetry.duty[a])||!std::isfinite(telemetry.requested_duty[a]))
                         throw std::runtime_error("Invalid numeric telemetry");
                     if(core_.dsp_clear_requested && !telemetry.fault){
@@ -491,6 +547,10 @@ private:
                         std::strcpy(error.data(),"DSP session changed; resynchronizing disarmed");
                     }
                     core_.receive(telemetry,link->session().ready);
+                    if(link->session().ready) {
+                        core_.state.acknowledged=trace_history.find(telemetry.session,telemetry.command_sequence);
+                        core_.state.acknowledged.valid_mask &= telemetry.fault?0:telemetry.arm_mask;
+                    }
                     sent_mask=link->session().ready?mask:0;
                     sent_active=link->session().ready&&core_.state.system;
 

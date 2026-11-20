@@ -286,3 +286,11 @@ td small { display: block; color: var(--muted); font-size: 11px }
   .table-scroll button,.table-scroll input { padding: 4px }
   .file-row { flex-wrap: wrap }
 }
+
+.controller-diagram img,.diagram-dialog img { display: block; width: 100%; background: #fff; border: 1px solid var(--line) }
+.controller-diagram button { margin-top: 6px }
+.diagram-dialog { width: min(880px,90vw); max-height: 90dvh; background: var(--paper); color: var(--ink); border: var(--outline) }
+.diagram-dialog img { height: min(72dvh,700px); object-fit: contain; margin-top: 8px }
+.diagram-signals { overflow-wrap: anywhere; font-size: 11px }
+#step-actions { padding-block: 12px; border-block: 1px solid var(--line) }
+#step-actions .controller-actions { margin-top: 8px }

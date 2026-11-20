@@ -105,3 +105,5 @@ name and an HTTP(S) panel URL. The UI hides the robot section after two seconds
 without a manifest heartbeat. This does not cancel a running experiment.
 The phantom API is `/phantom/command` (`phantom_interfaces/srv/Command`), documented
 in [robot packages](robot_packages.md).
+
+The per-axis controller command supports `step_start` with the current controller revision and `step_stop`. The shared Logger exposes the acknowledged SPI command and controller signals. See [controllers and frame identity](controllers.md#signal-diagrams-and-frame-identity).

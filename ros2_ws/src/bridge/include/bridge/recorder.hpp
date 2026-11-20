@@ -29,9 +29,9 @@ inline std::vector<Signal> signal_catalog() {
         add(prefix+"enabled","bool",group,[a](const Sample& s){return s.system&&s.selected[a]&&s.fault==Error::none;});
         add(prefix+"position_configured","bool",group,[a](const Sample& s){return s.position_configured[a];});
         add(prefix+"kp","duty/count",group,[a](const Sample& s){return s.controllers[a].parameters[0];});
-        add(prefix+"ki","duty/(count*s)",group,[a](const Sample& s){return s.controllers[a].parameters[1];});
-        add(prefix+"kd","duty*s/count",group,[a](const Sample& s){return s.controllers[a].parameters[2];});
-        add(prefix+"d_filter_hz","Hz",group,[a](const Sample& s){return s.controllers[a].parameters[3];});
+        add(prefix+"ki","duty/(count*s)",group,[a](const Sample& s){return s.tuning[a].ki;});
+        add(prefix+"kd","duty*s/count",group,[a](const Sample& s){return s.tuning[a].kd;});
+        add(prefix+"d_filter_hz","Hz",group,[a](const Sample& s){return s.tuning[a].d_filter_hz;});
         add(prefix+"duty_limit","duty",group,[a](const Sample& s){return s.tuning[a].limit;});
         add(prefix+"mode","enum",group,[a](const Sample& s){return s.mode[a];});
         add(prefix+"pwm_target","duty",group,[a](const Sample& s){return s.pwm[a];});
@@ -86,7 +86,35 @@ inline std::vector<Signal> signal_catalog() {
     PCD_SIGNAL("runner_state","enum","Runner",s.runner_state);
     PCD_SIGNAL("runner_row","tick","Runner",s.runner_row);
     PCD_SIGNAL("runner_cycles","count","Runner",s.runner_cycles);
+    PCD_SIGNAL("host_tick","tick","Host",s.host_tick);
+    PCD_SIGNAL("ack_matched","bool","DSP",s.acknowledged.host_tick!=0);
+    PCD_SIGNAL("ack_host_tick","tick","DSP",s.acknowledged.host_tick);
+    PCD_SIGNAL("ack_operation","enum","DSP",s.acknowledged.operation);
+    PCD_SIGNAL("ack_arm_mask","mask","DSP",s.acknowledged.arm_mask);
+    PCD_SIGNAL("ack_do_mask","mask","Digital I/O",s.acknowledged.digital_out);
+    PCD_SIGNAL("ack_ao0_raw","code","Analog I/O",s.acknowledged.analog_out[0]);
+    PCD_SIGNAL("ack_ao1_raw","code","Analog I/O",s.acknowledged.analog_out[1]);
+    PCD_SIGNAL("ctrl_input_sequence","count","DSP",s.acknowledged.input_sequence);
+    PCD_SIGNAL("step_tick","tick","Runner",s.acknowledged.experiment_tick);
 #undef PCD_SIGNAL
+    for(unsigned a=0;a<6;a++) {
+        const auto prefix="axis"+std::to_string(a)+"_",group="Axis "+std::to_string(a);
+        add(prefix+"ack_sent_duty","duty",group,[a](const Sample& s){return s.acknowledged.sent_duty[a];});
+        add(prefix+"ctrl_valid","bool",group,[a](const Sample& s){return (s.acknowledged.valid_mask>>a)&1;});
+        auto trace=[&](const char* name,const char* unit,double ControllerSignals::*member) {
+            add(prefix+name,unit,group,[a,member](const Sample& s){return s.acknowledged.axes[a].*member;});
+        };
+        trace("ctrl_kp","duty/count",&ControllerSignals::kp);
+        trace("ctrl_r_mm","mm",&ControllerSignals::r);
+        trace("ctrl_y_mm","mm",&ControllerSignals::y);
+        trace("ctrl_error_counts","count",&ControllerSignals::error);
+        trace("ctrl_p_duty","duty",&ControllerSignals::p);
+        trace("ctrl_i_duty","duty",&ControllerSignals::i);
+        trace("ctrl_d_duty","duty",&ControllerSignals::d);
+        trace("ctrl_u_duty","duty",&ControllerSignals::u);
+        trace("ctrl_u_im_duty","duty",&ControllerSignals::injection);
+        trace("ctrl_u_g_duty","duty",&ControllerSignals::plant);
+    }
     return out;
 }
 class Recorder {
@@ -94,6 +122,7 @@ class Recorder {
     std::ofstream file_;
     uint64_t id_=0,restarts_=0,last_=0;
     bool started_=false;
+    uint64_t step_command_=0,last_active_tick_=0;
     std::vector<size_t> columns_;
 public:
     const std::vector<Signal> catalog=signal_catalog();
@@ -103,7 +132,7 @@ public:
     explicit Recorder(std::filesystem::path directory):directory_(std::move(directory)){}
     bool active() const {return file_.is_open();}
     uint64_t id() const {return id_;}
-    void start(uint64_t id,const std::vector<std::string>& names,const Sample& s,const std::string& project) {
+    void start(uint64_t id,const std::vector<std::string>& names,const Sample& s,const std::string& project,uint64_t step_command=0) {
         if(active())throw std::runtime_error("A recording is already active");
         std::vector<size_t> columns;
         if(names.empty()){for(size_t i=0;i<catalog.size();i++)columns.push_back(i);}
@@ -120,7 +149,7 @@ public:
         file_.clear();file_.open(directory_/filename);
         if(!file_)throw std::runtime_error("Cannot create recording");
         columns_=std::move(columns);selected.clear();for(auto i:columns_)selected.push_back(catalog[i].name);
-        id_=id;restarts_=s.dsp_restarts;samples=0;last_=0;started_=false;error.clear();
+        id_=id;restarts_=s.dsp_restarts;samples=0;last_=0;started_=false;step_command_=step_command;last_active_tick_=0;error.clear();
         file_<<std::setprecision(17)<<"# project="<<project<<"; period_s="<<dt<<"; timezone="<<std::put_time(&local,"%z")<<"\n";
         for(unsigned a=0;a<6;a++)file_<<"# axis"<<a<<" counts_per_mm="<<s.scale[a]<<"; zero_counts="<<s.zero[a]
             <<"; min_mm="<<s.minimum[a]<<"; max_mm="<<s.maximum[a]<<"; profile="<<s.profiles[a].data()
@@ -136,7 +165,14 @@ public:
     void write(const Sample& s) {
         if(!active())return;
         if(s.dsp_restarts!=restarts_){error="Recording ended because the DSP restarted; a new startup zero was established";finish();return;}
-        if(s.record_id==id_)started_=true;
+        if(step_command_) {
+            if(s.record_id==id_)last_active_tick_=s.host_tick;
+            if(s.acknowledged.record!=id_) {
+                if(s.command_id>=step_command_ && s.record_id!=id_ &&
+                   (!s.connected || s.fault!=Error::none || s.acknowledged.host_tick>last_active_tick_))finish();
+                return;
+            }
+        } else if(s.record_id==id_)started_=true;
         else {if(started_)finish();return;}
         if(!s.connected||s.number==last_)return;
         last_=s.number;file_<<s.timestamp<<','<<s.number;

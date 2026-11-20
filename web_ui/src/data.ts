@@ -142,7 +142,7 @@ export function dataTools(){
             groupChecks.forEach(g=>g.input.disabled=s.recording);
             checks.forEach(c=>c.disabled=s.recording);for(const id of ['signals-all','signals-none'])el<HTMLButtonElement>(id).disabled=s.recording;
             el<HTMLButtonElement>('record-start').disabled=busy||!live||s.recording;
-            el<HTMLButtonElement>('runner-start').disabled=busy||!live||owned||!s.program_id;
+            el<HTMLButtonElement>('runner-start').disabled=busy||!live||owned||!s.program_id||s.program_name.startsWith('Step Recorder / axis ');
             for(const id of ['runner-load','runner-upload','runner-completion','runner-enable','runner-record']) (el(id) as HTMLInputElement).disabled=busy||owned;
             el<HTMLButtonElement>('runner-stop').disabled=!live;
             el('runner-state').textContent=['IDLE','RUNNING','HOLDING FINAL VALUES','COMPLETE / STOPPED','INTERRUPTED'][s.runner_state]||'—';

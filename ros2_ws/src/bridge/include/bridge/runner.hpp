@@ -10,11 +10,17 @@ struct Program {
     std::vector<uint8_t> channels;
     std::vector<double> values;
     uint16_t axes=0,digital=0,analog=0;
-    size_t rows() const {return channels.empty()?0:values.size()/channels.size();}
+    // A step program stores three tick counts rather than allocating one value per tick.
+    unsigned step_axis=kAxes;
+    uint32_t baseline=0,exposure=0,recovery=0;
+    double amplitude=0;
+    uint64_t revision=0;
+    bool is_step() const {return step_axis<kAxes;}
+    size_t rows() const {if(is_step())return baseline+exposure+recovery;return channels.empty()?0:values.size()/channels.size();}
 };
 inline bool valid_value(uint8_t channel,double value,const Sample& s) {
     if(!std::isfinite(value))return false;
-    if(channel<6)return s.position_configured[channel]&&valid_reference(s,channel,value);
+    if(channel<6)return s.position_configured[channel] && (s.controllers[channel].type!=step_recorder_type || value==0) && valid_reference(s,channel,value);
     if(channel<12)return std::abs(value)<=s.tuning[channel-6].limit;
     return value==std::floor(value)&&value>=0&&value<=(channel<16?1:4095);
 }
@@ -35,6 +41,7 @@ inline void validate_program(Program& p,const Sample& s) {
 class Runner {
     const Program* program_=nullptr;
     uint64_t record_=0;
+    bool waiting_for_arm_=false;
     size_t next_=0;
 public:
     bool owns(const Sample& s) const {return s.runner_state==1||s.runner_state==2;}
@@ -47,7 +54,7 @@ public:
         return false;
     }
     void stop(Control& core,uint8_t state=3,Error error=Error::none) {
-        auto& s=core.state;++s.stop_count;
+        auto& s=core.state;++s.stop_count;core.injection={};core.experiment_tick=-1;
         if(owns(s)) {
             for(unsigned a=0;a<6;a++)if(s.runner_axes&(1U<<a))core.apply({Op::axis,a,0,false});
             s.digital_out&=~s.runner_digital;
@@ -58,21 +65,30 @@ public:
     }
     Error command(const Command& c,Control& core) {
         auto& s=core.state;
-        if(c.op==Op::runner_stop){stop(core);return Error::none;}
+        if(c.op==Op::runner_stop){
+            if(c.record && (!owns(s) || s.program_id!=c.record))return Error::busy;
+            stop(core);return Error::none;
+        }
         if(c.op==Op::runner_load) {
             if(owns(s))return Error::busy;
             program_=c.program;s.program_id=program_->id;s.runner_rows=program_->rows();
             s.runner_axes=program_->axes;s.runner_digital=program_->digital;s.runner_analog=program_->analog;
             s.runner_state=0;s.runner_row=0;s.runner_cycles=0;s.runner_error=Error::none;return Error::none;
         }
-        if(!program_||owns(s))return Error::busy;
+        const Program* candidate=c.op==Op::step_start?c.program:program_;
+        if(!candidate||owns(s))return Error::busy;
+        if(candidate->is_step()) {
+            const auto a=candidate->step_axis;
+            if(c.op!=Op::step_start || !c.record || core.controllers[a].config.type!=step_recorder_type ||
+               s.controller_revision[a]!=candidate->revision || !s.position_configured[a])return Error::wrong_mode;
+        }
         if(c.check_stop&&c.stop_count!=s.stop_count)return Error::not_ready;
         if(!s.connected||s.fault!=Error::none||core.dsp_clear_requested)return Error::not_ready;
         if(c.value<0||c.value>2)return Error::range;
         // Stage the mode/enable changes so a rejected Start changes no output selection.
         Control next=core;
         if(c.enabled&&!s.system)next.state.selected={};
-        for(auto channel:program_->channels)if(channel<12) {
+        for(auto channel:candidate->channels)if(channel<12) {
             const unsigned a=channel%6,mode=channel<6?0:1;
             if(next.state.mode[a]!=mode){next.apply({Op::mode,a,double(mode)});if(next.state.command_error!=Error::none)return next.state.command_error;}
             if(c.enabled){next.apply({Op::axis,a,0,true});if(next.state.command_error!=Error::none)return next.state.command_error;}
@@ -80,7 +96,11 @@ public:
         }
         if(c.enabled){next.apply({Op::system,0,0,true});if(next.state.command_error!=Error::none)return next.state.command_error;}
         if(!next.state.system)return Error::not_ready;
-        core=next;s.runner_state=1;s.runner_completion=static_cast<uint8_t>(c.value);
+        core=next;
+        program_=candidate;
+        s.program_id=candidate->id;s.runner_rows=candidate->rows();
+        s.runner_axes=candidate->axes;s.runner_digital=candidate->digital;s.runner_analog=candidate->analog;
+        waiting_for_arm_=candidate->is_step();s.runner_state=1;s.runner_completion=static_cast<uint8_t>(c.value);
         s.runner_row=0;s.runner_cycles=0;s.runner_error=Error::none;next_=0;record_=c.record;
         if(record_)s.record_id=record_;
         return Error::none;
@@ -92,11 +112,23 @@ public:
             stop(core,4,s.fault==Error::none?Error::not_ready:s.fault);return;
         }
         if(s.runner_state==2)return;
+        if(program_->is_step() && (!record_ || s.record_id!=record_)) {stop(core,4,Error::not_ready);return;}
+        if(waiting_for_arm_) {
+            if((s.telemetry.arm_mask&s.runner_axes)!=s.runner_axes)return;
+            waiting_for_arm_=false;
+        }
         if(next_==program_->rows()) {
             ++s.runner_cycles;
             if(s.runner_completion==0){s.runner_state=2;return;}
             if(s.runner_completion==1){stop(core);return;}
             next_=0;
+        }
+        if(program_->is_step()) {
+            const auto a=program_->step_axis;
+            core.injection[a]=next_>=program_->baseline && next_<program_->baseline+program_->exposure ? program_->amplitude:0;
+            core.experiment_tick=static_cast<int64_t>(next_);
+            s.target[a]=0;s.runner_row=next_++;
+            return;
         }
         const auto offset=next_*program_->channels.size();
         for(size_t i=0;i<program_->channels.size();i++)if(!valid_value(program_->channels[i],program_->values[offset+i],s)) {

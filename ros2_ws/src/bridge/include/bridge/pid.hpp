@@ -1,4 +1,5 @@
 #pragma once
+#include "controller_trace.hpp"
 #include <algorithm>
 #include <cmath>
 namespace diamond {
@@ -16,7 +17,7 @@ struct PidController {
         else integral=0;
         tuning=next;
     }
-    double step(double error, double dt) {
+    double step(double error, double dt, ControllerSignals* signals=nullptr) {
         if(tuning.ki==0) integral=0;
         const double raw_derivative=have_previous ? (error-previous)/dt : 0;
         double derivative=raw_derivative;
@@ -24,7 +25,13 @@ struct PidController {
             const double ratio=6.283185307179586*tuning.d_filter_hz*dt;
             derivative=previous_derivative+(ratio/(1+ratio))*(raw_derivative-previous_derivative);
         }
-        const double raw=tuning.kp*error+integral+tuning.kd*derivative;
+        const double proportional=tuning.kp*error, differential=tuning.kd*derivative;
+        const double raw=proportional+integral+differential;
+        if(signals) {
+            signals->p=tuning.sign*proportional;
+            signals->i=tuning.sign*integral;
+            signals->d=tuning.sign*differential;
+        }
         if (!std::isfinite(raw)) return NAN;
         const double output=std::clamp(raw,-tuning.limit,tuning.limit);
         const double increment=tuning.ki*error*dt;

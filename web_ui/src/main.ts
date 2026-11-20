@@ -249,6 +249,7 @@ function render(s: State) {
     }
     for (let a = 0; a < plots.length; a++) {
         const enabled = !!s.system_enabled && !!s.axis_enabled?.[a] && !s.fault, pwm = s.control_mode?.[a] === 1;
+        const fixedZero = !pwm && s.controllers?.[a]?.type==='step_recorder';
         const owned = (s.runner_state === 1 || s.runner_state === 2) && !!(s.runner_axis_mask & (1 << a));
         const pos = s.position_mm?.[a] ?? 0, t = pwm ? (s.pwm_target?.[a] ?? 0) * 100 : s.target_mm?.[a] ?? 0;
         text(`position-${a}`, live ? pos.toFixed(2) : '—');
@@ -265,12 +266,12 @@ function render(s: State) {
         const [minimum, maximum] = bounds(a);
         for (const id of [`slider-${a}`, `target-${a}`]) {
             const input = $<HTMLInputElement>(id);
-            input.disabled = !live || owned;
+            input.disabled = !live || owned || fixedZero;
             if(pwm || id.startsWith('slider-')) { input.min = String(minimum); input.max = String(maximum); }
             else { input.removeAttribute('min'); input.removeAttribute('max'); }
             input.setAttribute('aria-label', `Axis ${a} target ${pwm ? 'duty percent' : 'position mm'}`);
         }
-        $<HTMLButtonElement>(`apply-${a}`).disabled = !live || owned;
+        $<HTMLButtonElement>(`apply-${a}`).disabled = !live || owned || fixedZero;
         text(`target-label-${a}`, pwm ? 'Duty / %' : 'Target / mm');
         for (let i = 0; i < 5; i++) {
             const value = Number((minimum + (maximum - minimum) * i / 4).toFixed(2));

@@ -5,6 +5,14 @@
 #include <unistd.h>
 using namespace diamond;
 int main(){
+    // Echo matching is independent of controller type, transfer delay and wrap.
+    ControlHistory history;ControlFrame first_tick{},second_tick{};
+    first_tick.host_tick=11;first_tick.digital_out=9;second_tick.host_tick=12;
+    history.put(7,UINT32_MAX,first_tick);history.put(7,0,second_tick);
+    assert(history.find(7,UINT32_MAX).digital_out==9 && history.find(7,0).host_tick==12);
+    assert(history.find(7,UINT32_MAX).host_tick==11 && !history.find(8,UINT32_MAX).host_tick);
+    history.put(7,64,first_tick);
+    assert(!history.find(7,0).host_tick && !history.find(0,0).host_tick);
     Control core;core.receive({});
     Program p;p.id=1;p.name="pulse";p.channels={0,1,12};
     for(int i=0;i<40;i++){p.values.push_back(i*.01);p.values.push_back(-i*.01);p.values.push_back(i<10?1:0);}
@@ -47,6 +55,16 @@ int main(){
     std::ifstream file(dir/recorder.filename);std::string line;unsigned rows=0;
     while(std::getline(file,line))if(line[0]!='#'){if(rows==0)assert(line=="timestamp_us,sample,axis0_position_mm,do0_command");rows++;}
     assert(rows==11);const auto first=recorder.filename;recorder.start(2,{},sample,"test");assert(recorder.filename!=first);recorder.finish();
+    // Stop can be issued before the DSP echoes the last two excitation commands.
+    recorder.start(7,{"step_tick"},sample,"test",80);
+    sample.record_id=7;sample.command_id=80;sample.host_tick=11;sample.number++;
+    sample.acknowledged={};recorder.write(sample);
+    sample.host_tick++;sample.number++;sample.acknowledged.record=7;sample.acknowledged.host_tick=11;sample.acknowledged.experiment_tick=0;
+    recorder.write(sample);sample.host_tick++;sample.number++;sample.record_id=0;
+    sample.acknowledged.host_tick=12;sample.acknowledged.experiment_tick=1;recorder.write(sample);
+    assert(recorder.active() && recorder.samples==2);
+    sample.acknowledged.record=0;sample.acknowledged.host_tick=13;recorder.write(sample);
+    assert(!recorder.active());
     std::filesystem::remove_all(dir);
     std::cout<<"PASS: atomic rows, 10-tick pulse, loop/hold/stop, channel ownership, fault recording stop, selected CSV columns\n";
 }

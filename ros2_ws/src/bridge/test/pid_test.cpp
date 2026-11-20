@@ -66,5 +66,13 @@ int main() {
     config.parameters[3]=-1;assert(!valid_controller(config));
     config.parameters[3]=1001;assert(!valid_controller(config));
     config.parameters[3]=NAN;assert(!valid_controller(config));
+    ControllerConfig step_config;step_config.type=step_recorder_type;step_config.parameters={.01,.5,0,.1,0};
+    axis.configure(step_config,false);axis.limit=.6;axis.sign=-1;
+    near(axis.step(42,.2,100,dt,.5),.6);
+    near(axis.signals.r,0);near(axis.signals.error,-20);near(axis.signals.u,.2);near(axis.signals.injection,.5);
+    step_config.parameters[0]=0;axis.configure(step_config,true);
+    near(axis.step(-12,.2,100,dt,-.3),-.3);
+    config.parameters={.01,0,0,0};axis.configure(config,false);
+    near(axis.step(0,.2,100,dt),.2);near(axis.signals.injection,0);
     std::cout<<"PASS: P/PD saturation, tuning, anti-windup, D units, low-pass/bypass/reset, live cutoff and unchanged PI\n";
 }

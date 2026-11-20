@@ -32,7 +32,7 @@ public:
 };
 
 struct Program;
-enum class Op { runner_load, runner_start, runner_stop, target, pwm, mode, axis, system, stop, zero, clear, clear_dsp, kp, ki, kd, limit, digital, analog, record, controller, profile };
+enum class Op { runner_load, runner_start, runner_stop, step_start, target, pwm, mode, axis, system, stop, zero, clear, clear_dsp, kp, ki, kd, limit, digital, analog, record, controller, profile };
 // Preserve existing numeric fault codes in recorded CSVs.
 enum class Error { none, busy, disabled_required, range, wrong_mode=5, position_unconfigured, not_ready=8, numeric=10, deadline, telemetry, dsp, realtime };
 inline const char* error_text(Error e) {
@@ -67,7 +67,8 @@ struct Sample {
     uint16_t runner_axes=0,runner_digital=0,runner_analog=0;
     Error runner_error=Error::none;
     Telemetry telemetry{};
-    uint64_t number=0, timestamp=0, command_id=0, record_id=0;
+    ControlFrame acknowledged{};
+    uint64_t host_tick=0, number=0, timestamp=0, command_id=0, record_id=0;
     std::array<double,6> target{}, reference{}, position{};
     std::array<double,6> pwm{}, scale{counts_per_mm,counts_per_mm}, minimum{-50,-50}, maximum{50,50};
     std::array<uint8_t,6> mode{0,0,1,1,1,1}; // 0: position, 1: direct normalized DSP duty.
@@ -99,6 +100,8 @@ class Control {
 public:
     Sample state{};
     std::array<AxisController,6> controllers{};
+    std::array<double,6> injection{};
+    int64_t experiment_tick=-1;
     bool initialized=false, dsp_clear_requested=false;
     uint16_t mask() const {
         if (!state.system || state.fault!=Error::none || !state.connected) return 0;
@@ -187,6 +190,7 @@ private:
         case Op::target:
             if(!state.position_configured[a]) {state.command_error=Error::position_unconfigured;return;}
             if(state.mode[a]!=0) {state.command_error=Error::wrong_mode; return;}
+            if(controllers[a].config.type==step_recorder_type && c.value!=0){state.command_error=Error::wrong_mode;return;}
             if(!valid_reference(state,a,c.value)) {state.command_error=Error::range; return;}
             state.target[a]=c.value; break;
         case Op::pwm:
@@ -198,8 +202,8 @@ private:
             if(c.value!=0 && c.value!=1) {state.command_error=Error::range; return;}
             if(c.value==0 && !state.position_configured[a]) {state.command_error=Error::position_unconfigured;return;}
             state.mode[a]=static_cast<uint8_t>(c.value);state.pwm[a]=0;
-            state.target[a]=state.position[a];
-            state.reference[a]=state.position[a];controllers[a].reset();break;
+            state.reference[a]=state.target[a]=controllers[a].config.type==step_recorder_type?0:state.position[a];
+            controllers[a].reset();break;
         case Op::zero:
             if(!state.position_configured[a]) {state.command_error=Error::position_unconfigured;return;}
             if(enabled(a)) {state.command_error=Error::disabled_required; return;}
@@ -213,7 +217,9 @@ private:
             if(!state.position_configured[a]) {state.command_error=Error::position_unconfigured;return;}
             if(enabled(a)&&(c.controller.type!=controllers[a].config.type || c.controller.slew_enabled!=controllers[a].config.slew_enabled)) {state.command_error=Error::disabled_required;return;}
             if(!valid_controller(c.controller)) {state.command_error=Error::range;return;}
+            if(c.controller.type!=controllers[a].config.type)state.profiles[a]={};
             controllers[a].configure(c.controller,enabled(a));
+            if(c.controller.type==step_recorder_type){state.target[a]=0;state.reference[a]=0;}
             if(c.profile[0])state.profiles[a]=c.profile;
             state.controller_revision[a]++;break;
         case Op::profile:
@@ -233,14 +239,17 @@ private:
         const auto after=mask();
         for(unsigned i=0;i<kAxes;i++) {
             if((before^after)&(1U<<i)) {
-                controllers[i].reset(); state.reference[i]=state.position[i];
-                state.target[i]=state.position[i];
+                controllers[i].reset();
+                state.reference[i]=state.target[i]=controllers[i].config.type==step_recorder_type?0:state.position[i];
                 state.pwm[i]=0;
             }
         }
     }
 public:
-    Values duty() {
+    Values duty() {ControlFrame frame;return duty(frame);}
+    Values duty(ControlFrame& frame) {
+        frame={};frame.input_sequence=state.telemetry.sequence;frame.host_tick=state.host_tick;frame.experiment_tick=experiment_tick;
+        if(experiment_tick>=0)frame.record=state.record_id;
         Values result{};
         for(unsigned a=0;a<kAxes;a++) {
             if(!enabled(a)) {controllers[a].reset(); continue;}
@@ -248,10 +257,12 @@ public:
                 result[a]=static_cast<float>(std::clamp(state.pwm[a],-controllers[a].limit,controllers[a].limit));
                 continue;
             }
-            const double output=controllers[a].step(state.target[a],state.position[a],state.scale[a],dt);
+            const double output=controllers[a].step(state.target[a],state.position[a],state.scale[a],dt,injection[a]);
+            frame.axes[a]=controllers[a].signals;frame.valid_mask|=1U<<a;
             state.reference[a]=controllers[a].reference_mm;
             if(!std::isfinite(output)) {fail(Error::numeric);return {};}
             result[a]=static_cast<float>(std::clamp(output,-controllers[a].limit,controllers[a].limit));
+            frame.axes[a].plant=result[a];
             if(!std::isfinite(result[a])) {fail(Error::numeric); return {};}
         }
         return result;

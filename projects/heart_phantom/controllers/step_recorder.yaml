@@ -1,0 +1,13 @@
+schema_version: 2
+id: step_recorder
+type: step_recorder
+sample_period_s: 0.0005
+parameters:
+  kp: 0.0005
+  step_duty: 0.05
+  baseline_s: 0.5
+  step_s: 0.25
+  recovery_s: 0.5
+reference:
+  type: passthrough
+  max_rate_mm_s: 20.0

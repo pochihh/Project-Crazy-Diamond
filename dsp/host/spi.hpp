@@ -114,6 +114,7 @@ public:
     SpiLink(const SpiLink&) = delete;
     SpiLink& operator=(const SpiLink&) = delete;
     const SpiTransferInfo& diagnostics() const {return last_transfer_;}
+    const PcdCommand& last_command() const {return last_command_;}
     const SpiSession& session() const {return session_;}
     void resynchronize(){session_.resynchronize();}
 
@@ -125,6 +126,7 @@ public:
         std::copy(values.begin(),values.end(),c.duty);
         std::copy(reference.begin(),reference.end(),c.reference);
         std::copy(analog_out.begin(),analog_out.end(),c.analog_out);
+        last_command_=c;
         const auto telemetry=parse_telemetry(transfer(make_command(c)));
         session_.accept(telemetry);
         return telemetry;
@@ -155,6 +157,7 @@ private:
     }
     int fd_ = -1;
     SpiSession session_;
+    PcdCommand last_command_{};
     SpiTransferInfo last_transfer_{};
 };
 
