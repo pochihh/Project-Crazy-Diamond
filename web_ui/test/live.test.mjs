@@ -145,3 +145,14 @@ test('PWM plot keeps measured position and omits the unrelated position target',
   assert.equal(f.paths.length,positionPaths-1);
   assert.equal(f.paths.at(-1).length,1);
 });
+
+const {unitScales,traceHue}=await source('signalPlot');
+test('overlaid signals share native units and keep narrow pulses and signed duty in range',()=>{
+  const traces=['mm','bool','mm','duty','code'].map((unit,index)=>({name:'v'+index,unit,index}));
+  const frames=[{time:0,latest:[-3,0,10,-.1,3],minimum:[-4,0,9,-.5,3],maximum:[-2,1,11,0,3]}];
+  assert.deepEqual([...unitScales(traces,frames)],[
+    ['mm',{low:-4,high:11}],['bool',{low:0,high:1}],['duty',{low:-1,high:1}],['code',{low:2.5,high:3.5}],
+  ]);
+  assert.deepEqual(unitScales([traces[2]],frames).get('mm'),{low:9,high:11});
+  assert.notEqual(traceHue('axis0_reference_mm'),traceHue('axis1_reference_mm'));
+});

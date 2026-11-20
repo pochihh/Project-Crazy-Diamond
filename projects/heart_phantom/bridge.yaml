@@ -19,3 +19,10 @@ bridge:
     axis1.counts_per_mm: 321.846662696944
     axis1.minimum_mm: -50.0
     axis1.maximum_mm: 50.0
+    axis2.position_control: true
+    axis2.controller_profile: bench_pid
+    axis2.motor_sign: -1.0
+    axis2.duty_limit: 1.0
+    axis2.counts_per_mm: 321.846662696944
+    axis2.minimum_mm: -50.0
+    axis2.maximum_mm: 50.0

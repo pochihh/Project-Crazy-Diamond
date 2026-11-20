@@ -1,5 +1,6 @@
 :root {
   color-scheme: light;
+  --trace-lightness: 35%;
   --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   --title: Georgia, "Times New Roman", serif;
   --bg: #efede3;
@@ -23,6 +24,7 @@
 }
 :root[data-theme=dark] {
   color-scheme: dark;
+  --trace-lightness: 70%;
   --bg: #20251f; --paper: #2a302a; --ink: #f1f0e3; --muted: #c0c7b9;
   --line: #667163; --grid: #b8c0a710; --plot: #242b24; --action: #a6c8f2;
   --selected: #313f4b; --sage: #344d3a; --sage-ink: #b9dfbd; --red: #ac3830; --shadow: #101710;
@@ -125,7 +127,15 @@ footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8p
 .badge.recording,.badge[data-state=FAULT] { color: white; background: var(--red) }
 
 .axis { container: axis / inline-size }
-.axis.editing { border-color: var(--action); box-shadow: 3px 3px 0 var(--action) }
+.expandable,details { cursor: pointer; --edge: var(--shadow) }
+.expandable .axis-control { cursor: default }
+@media (hover:hover) and (pointer:fine) {
+  .expandable:hover,details:hover { box-shadow: 5px 5px 0 var(--edge); translate: -1px -1px }
+}
+.axis.editing { --edge: var(--action); border-color: var(--action); outline: 2px solid var(--action); box-shadow: 5px 5px 0 var(--edge) }
+.axis.editing .axis-summary { background: var(--selected) }
+.axis.editing .disclosure { color: var(--action) }
+.axis.editing .gear[aria-pressed=true] { color: var(--paper); background: var(--action); border-color: var(--action) }
 .axis-summary { display: grid; grid-template-columns: minmax(0,1.12fr) minmax(0,.8fr) minmax(0,1.6fr); align-items: stretch; gap: 12px; padding: 12px }
 .axis-reading { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; justify-content: center }
 .axis-reading .disclosure { margin-bottom: 7px }
@@ -191,14 +201,12 @@ summary { cursor: pointer; font-weight: 600 }
 #signal-list { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,200px),1fr)); gap: 16px; margin-top: 15px }
 #signal-list fieldset { min-width: 0; margin: 0; border: 0; border-top: 1px solid var(--ink); padding: 6px 0 }
 #signal-list legend { font-weight: 700 }
-#signal-list label,#program-channels label { display: flex; align-items: center; gap: 7px; font-size: 12px; overflow-wrap: anywhere; cursor: pointer }
-#program-channels { display: flex; gap: 14px; flex-wrap: wrap; margin: 10px 0 }
-.data-plots,.host-meters,.expansion-grid { display: grid; gap: 14px; grid-template-columns: repeat(2,minmax(0,1fr)); align-items: start }
-.data-plot h3,#program-plots figcaption { overflow-wrap: anywhere; font-size: 12px }
-.data-plot canvas { margin-top: 6px }
-#program-plots figure { padding: 8px; background: var(--plot); border-top: 1px solid var(--line) }
-#program-plots svg { display: block; width: 100%; height: 85px }
-#program-plots path { fill: none; stroke: var(--action); stroke-width: 1.5 }
+#signal-list label,.trace-legend label { display: flex; align-items: center; gap: 7px; font-size: 12px; overflow-wrap: anywhere; cursor: pointer }
+.trace-legend { display: flex; gap: 5px 16px; flex-wrap: wrap; margin: 4px 0 12px }
+input.trace-check { accent-color: hsl(var(--hue) 62% var(--trace-lightness)) }
+.signal-plot canvas { height: clamp(230px,31vh,360px) }
+.scale-key { margin: 8px 0 0; font-size: 11px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere }
+.host-meters,.expansion-grid { display: grid; gap: 14px; grid-template-columns: repeat(2,minmax(0,1fr)); align-items: start }
 .file-row { display: flex; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere }
 .host-meters { grid-template-columns: repeat(auto-fit,minmax(min(100%,164px),1fr)) }
 .host-card>.eyebrow { display: block; font-weight: 600; margin-bottom: 14px }
@@ -244,7 +252,7 @@ td small { display: block; color: var(--muted); font-size: 11px }
   .topbar { padding: 0 10px; gap: 10px }
   .topbar-status .fine { display: none }
   .nav-button { padding-inline: 3px; margin-right: 2px }
-  .data-plots,.expansion-grid { grid-template-columns: 1fr }
+  .expansion-grid { grid-template-columns: 1fr }
 }
 @media(max-width:480px) {
   #workspace { padding: 13px 7px; scrollbar-gutter: auto }

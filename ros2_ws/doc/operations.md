@@ -75,8 +75,10 @@ UI slider ranges and SPI device. For another project, supply `projects/<id>/proj
 services. Profile parameters persist when saved; startup profile selection
 remains in the project YAML.
 
-Both commissioned axes use a 500-cycle encoder,
+Axes 0, 1 and 2 use the same 500-cycle encoder,
 ×4 decoding, 91/6 gearbox, 30-tooth module-1 pinion: 321.846662696944 counts/mm.
+Axis 2 uses CPU1 eQEP3. Its PWM, STBY and DIR are dock pins 50, 52 and 62; encoder A, B and optional index are 127, 128 and 130. Shared motor enable is pin 71. The project selects `bench_pid`, motor sign −1 and duty cap 1 for axis 2. The Phantom sine program continues to use axes 0 and 1.
+
 The position sliders display ±50 mm relative to the captured startup origin.
 This is not an enforced travel limit; numeric input, ROS and CSV references can
 exceed it. Neither enabling outside that range nor PWM motion across it is blocked.
@@ -97,9 +99,9 @@ the axis is enabled or an active/holding runner owns it. Once reset, a stationar
 axis should need no return-to-zero travel before a sine run. The robot's settling
 wait still runs. `tests/phantom_startup.py` checks this at nonzero raw encoder counts.
 
-Open the PCD UI at `http://<pi-address>:8000/`. Axis controls are independent of the
+Open the PCD UI at `http://<pi-address>:8000/`. The dashboard and Resources list use the project manifest’s axes in DSP channel order (one to six). Axis controls are independent of the
 optional robot panel. Expand an axis to use its slider, numeric target, zero or plot.
-On each collapsed card, position is on the left, target and error are in the middle, and the gear, Enable switch and duty meter are on the right. Expanding adds Reset zero and the target entry on one row, followed by the ruler slider and position plot. The settings column stays visible while navigating. It initially shows Web settings. An axis gear selects that axis for Position/PWM mode and controller tuning, and Settings returns to the web preferences. On narrow screens the column docks below the workspace. The light meter band
+On each collapsed card, position is on the left, target and error are in the middle, and the gear, Enable switch and duty meter are on the right. Expanding adds Reset zero and the target entry on one row, followed by the ruler slider and position plot. Click the card surface or its disclosure button to expand or collapse. The commands, switch and slider operate independently. The settings column starts empty. An axis gear selects that axis for Position/PWM mode and tuning. The Settings button opens web preferences. Clicking the selected gear or Settings again clears the column. Clicking the workspace or switching tabs preserves the selection. On narrow screens the column docks below the workspace. The light meter band
 tracks recent magnitude peaks and falls at 25 percentage points per second.
 
 The DSP card shows INIT until feedback is synchronized, IDLE for disarmed, RUNNING

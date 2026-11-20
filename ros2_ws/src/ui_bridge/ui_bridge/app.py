@@ -128,8 +128,10 @@ def load_project(root: Path):
     if not re.fullmatch(r'[a-z0-9_-]+', project_id):
         raise ValueError('Invalid DIAMOND_PROJECT')
     project = json.loads((root / 'projects' / project_id / 'project.json').read_text())
-    if project.get('id') != project_id or len(project.get('axes', [])) != 2:
-        raise ValueError('Project manifest must match its directory and define two axes')
+    axes = project.get('axes')
+    if (project.get('id') != project_id or not isinstance(axes, list) or not 1 <= len(axes) <= 6
+            or not all(isinstance(axis, dict) for axis in axes)):
+        raise ValueError('Project manifest must match its directory and define 1–6 axes in DSP channel order')
     return project
 
 

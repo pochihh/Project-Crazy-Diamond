@@ -1,8 +1,8 @@
 # Architecture
 
 PCD controls one DSP with six motor/encoder channels, four DI, four DO, six AI and
-two DAC outputs. The bench has calibrated position control on axes 0 and 1;
-channels 2–5 support direct duty, with position control unconfigured by default.
+two DAC outputs. The Heart Phantom project configures axes 0–2 for rack-and-pinion position control.
+Axes 3–5 support direct duty. The Phantom sine experiment uses axes 0 and 1.
 
 ```mermaid
 flowchart TD

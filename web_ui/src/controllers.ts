@@ -9,7 +9,7 @@ export function controllerPanel() {
     const panel = document.createElement('section');
     panel.id = 'controller-panel'; panel.hidden = true;
     panel.setAttribute('aria-label', 'Axis controller settings');
-    panel.innerHTML = `<div class="panel-head"><span id="controller-title">AXIS CONTROLLER</span></div><div class="axis-modes">${[0,1].map(a => `<label id="mode-field-${a}" hidden>Axis control mode<select id="mode-${a}" aria-label="Axis ${a} control mode"><option value="0">Position</option><option value="1">PWM / duty</option></select></label>`).join('')}</div><div class="settings-body"><label>Controller<select id="controller-type"></select></label><p>Change type while disabled. Parameters can be tuned while running. LQR awaits its state model.</p><label>Saved profile<select id="controller-profile"></select></label><div class="controller-actions"><button id="profile-load">LOAD / RELOAD</button><button id="profiles-refresh" class="secondary">REFRESH</button></div><p id="controller-profile-status"></p><div id="controller-parameters" class="controller-parameters"></div><p id="controller-readback" role="status"></p><label>Reference processing<select id="reference-type"><option value="passthrough">Passthrough / no shaping</option><option value="slew_limit">Slew limit</option></select></label><label>Maximum reference rate / mm/s<input id="reference-rate" type="number" min="0.000001" step="any" value="20"></label><button id="controller-apply">APPLY PARAMETERS</button><div class="controller-actions"><button id="profile-save">SAVE PROFILE</button></div><label>New profile ID<input id="profile-new" placeholder="bench_pid_v2" maxlength="63" pattern="[a-z0-9_-]+"></label><button id="profile-create">SAVE AS NEW PROFILE</button><hr><label>Axis duty limit / 0–1<input id="controller-limit" type="number" min="0.000001" max="1" step="any"></label><button id="controller-limit-apply">SET DUTY LIMIT</button><p>Duty limit requires this axis disabled and stays in the axis configuration, outside the shared profile.</p><p id="controller-reference"></p><p id="controller-feedback" role="status"></p></div>`;
+    panel.innerHTML = `<div class="panel-head"><span id="controller-title">AXIS CONTROLLER</span></div><div class="axis-modes"></div><div class="settings-body"><label>Controller<select id="controller-type"></select></label><p>Change type while disabled. Parameters can be tuned while running. LQR awaits its state model.</p><label>Saved profile<select id="controller-profile"></select></label><div class="controller-actions"><button id="profile-load">LOAD / RELOAD</button><button id="profiles-refresh" class="secondary">REFRESH</button></div><p id="controller-profile-status"></p><div id="controller-parameters" class="controller-parameters"></div><p id="controller-readback" role="status"></p><label>Reference processing<select id="reference-type"><option value="passthrough">Passthrough / no shaping</option><option value="slew_limit">Slew limit</option></select></label><label>Maximum reference rate / mm/s<input id="reference-rate" type="number" min="0.000001" step="any" value="20"></label><button id="controller-apply">APPLY PARAMETERS</button><div class="controller-actions"><button id="profile-save">SAVE PROFILE</button></div><label>New profile ID<input id="profile-new" placeholder="bench_pid_v2" maxlength="63" pattern="[a-z0-9_-]+"></label><button id="profile-create">SAVE AS NEW PROFILE</button><hr><label>Axis duty limit / 0–1<input id="controller-limit" type="number" min="0.000001" max="1" step="any"></label><button id="controller-limit-apply">SET DUTY LIMIT</button><p>Duty limit requires this axis disabled and stays in the axis configuration, outside the shared profile.</p><p id="controller-reference"></p><p id="controller-feedback" role="status"></p></div>`;
     inspector.append(panel);
     const el = <T extends HTMLElement = HTMLElement>(id: string) => panel.querySelector<T>(`#${id}`)!;
     const type = el<HTMLSelectElement>('controller-type'), profile = el<HTMLSelectElement>('controller-profile');
@@ -80,34 +80,46 @@ export function controllerPanel() {
         paint();
     }
     async function send(operation: string, extra: ControllerCommand = {}, value = 0) {
+        const sentAxis = axis;
         busy = true; paint(); feedback('Applying…');
         try {
             const result = await command(operation,axis,value,false,extra);
             update(result.state);
+            if(selection !== sentAxis) return;
             if(operation !== 'limit') { dirty = false; revision = -1; }
             if(operation.startsWith('profile_')) await refresh();
             feedback(operation === 'profile_save' || operation === 'profile_create' ? 'Profile saved. Other axes keep their active parameters until reloaded.' : `Applied and read back · command ${result.command_id}, revision ${result.controller_readback.controller_revision}.`);
-        } catch(error) { feedback(String(error)); }
+        } catch(error) { if(selection === sentAxis) feedback(String(error)); }
         finally { busy = false; paint(); }
     }
-    function selectAxis(selected: number | null) {
-        for (let i=0;i<2;i++) {
-            el(`mode-field-${i}`).hidden = selected !== i;
-            document.getElementById(`axis-card-${i}`)!.classList.toggle('editing',selected===i);
-            document.getElementById(`controller-open-${i}`)!.setAttribute('aria-pressed',String(selected===i));
+    let selection: 'web' | number | null = null;
+    const webButton = document.getElementById('settings-button')!;
+    function select(next: typeof selection) {
+        selection = next === selection ? null : next;
+        const web = selection === 'web';
+        webButton.classList.toggle('active', web);
+        webButton.setAttribute('aria-pressed', String(web));
+        document.getElementById('settings-panel')!.hidden = !web;
+        panel.hidden = typeof selection !== 'number';
+        for (const gear of Array.from(document.querySelectorAll<HTMLButtonElement>('.axis .gear'))) {
+            const a = Number(gear.dataset.axis);
+            const selected = a === selection;
+            gear.setAttribute('aria-pressed',String(selected));
+            gear.closest('.axis')!.classList.toggle('editing', selected);
+            el(`mode-field-${a}`).hidden = !selected;
         }
-    }
-    function showWebSettings() {
-        if (panel.hidden) return;
-        panel.hidden = true;
-        selectAxis(null);
-        document.getElementById('settings-panel')!.hidden = false;
-        const web = document.getElementById('settings-button')!;
-        web.setAttribute('aria-pressed','true');
-        web.classList.add('active');
         inspector.scrollTop = 0;
+        if (typeof selection !== 'number') return;
+        axis = selection;
+        dirty = false;
+        revision = -1;
+        feedback('');
+        el<HTMLInputElement>('controller-limit').removeAttribute('data-dirty');
+        el('controller-title').textContent = `AXIS ${axis} / CONTROLLER`;
+        paint();
+        void refresh().catch(e => feedback(String(e)));
     }
-    document.getElementById('settings-button')!.onclick = showWebSettings;
+    webButton.onclick = () => select('web');
     type.onchange = () => { dirty = true; fields(type.value,catalog.types.find(t => t.type === type.value)?.defaults ?? []); paint(); };
     el('controller-apply').onclick = () => {
         const parameters: Record<string,number> = {};
@@ -135,15 +147,11 @@ export function controllerPanel() {
         if(!input.value || !input.checkValidity()) {feedback('Duty limit must be greater than zero and at most one.');return;}
         await send('limit',{},Number(input.value)); delete input.dataset.dirty; paint();
     };
-    for(let a=0;a<2;a++) document.getElementById(`controller-open-${a}`)!.onclick = () => {
-        if(busy) return;
-        if (!panel.hidden && axis === a) return;
-        selectAxis(a); axis = a; dirty = false; revision = -1; feedback('');
-        el<HTMLInputElement>('controller-limit').removeAttribute('data-dirty');
-        el('controller-title').textContent = `AXIS ${a} / CONTROLLER`;
-        document.getElementById('settings-panel')!.hidden = true;
-        const web = document.getElementById('settings-button')!; web.setAttribute('aria-pressed','false'); web.classList.remove('active');
-        panel.hidden = false; inspector.scrollTop = 0; paint(); void refresh().catch(e => feedback(String(e)));
-    };
-    return {render(s: ControllerState, connected: boolean){update(s);live=connected;paint();}};
+    function addAxis(a: number) {
+        panel.querySelector('.axis-modes')!.insertAdjacentHTML('beforeend', `<label id="mode-field-${a}" hidden>Axis control mode<select id="mode-${a}" aria-label="Axis ${a} control mode"><option value="0">Position</option><option value="1">PWM / duty</option></select></label>`);
+        const gear = document.getElementById(`controller-open-${a}`)!;
+        gear.dataset.axis = String(a);
+        gear.onclick = () => select(a);
+    }
+    return {addAxis, render(s: ControllerState, connected: boolean){update(s);live=connected;paint();}};
 }

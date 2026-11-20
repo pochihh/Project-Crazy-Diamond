@@ -3,7 +3,7 @@ import './style.css';
 import {dataTools, type DataState} from './data';
 import { command } from './command';
 import { PositionPlot } from './plot';
-import { layout, meter } from './layout';
+import { layout, meter, axisCard } from './layout';
 import { controllerPanel, type ControllerState } from './controllers';
 import { defaults, readSettings, type Settings } from './settings';
 type State = ControllerState & DataState & {
@@ -75,7 +75,7 @@ const inputValue = (id: string, value: string) => { const el = $<HTMLInputElemen
 $('app').innerHTML = layout;
 const controllers = controllerPanel();
 const data=dataTools();
-let project: Project = { id: 'heart_phantom', name: 'Heart Phantom', axes: [{ name: 'Axis 0' }, { name: 'Axis 1' }] };
+let project: Project = { id: 'heart_phantom', name: 'Heart Phantom', axes: [] };
 let settings: Settings;
 try {
     settings = readSettings(localStorage.getItem('pcd-web-settings'));
@@ -91,8 +91,8 @@ let snapshotPending = false, lastSnapshotRequest = 0, lastPlotPaint = 0, lastSys
 let lastInputRejections = 0;
 let messageTimeout: ReturnType<typeof setTimeout>;
 const retiredStreams = new Set<string>();
-const plots = [0, 1].map(a => new PositionPlot($<HTMLCanvasElement>(`plot-${a}`)));
-const plotStartSequences = [0, 0];
+const plots: PositionPlot[] = [];
+const plotStartSequences: number[] = [];
 const pendingTargets = new Map<number, {
     operation: string;
     value: number;
@@ -140,15 +140,24 @@ function decayMeters(now: number) {
         m.element.style.setProperty('--peak', m.peak + '%');
     }
 }
+const interactive = 'button, input, select, textarea, a, label, summary, [role=switch], .axis-control';
 function disclosure(id: string, content: string) {
-    $(id).onclick = () => {
-        const body = $(content);
+    const button = $(id), body = $(content);
+    button.closest('.expandable')!.addEventListener('click', event => {
+        if (!(event.target instanceof Element)) return;
+        const control = event.target.closest(interactive);
+        if ((control && control !== button) || (!control && window.getSelection()?.toString())) return;
         body.hidden = !body.hidden;
-        $(id).setAttribute('aria-expanded', String(!body.hidden));
-    };
+        button.setAttribute('aria-expanded', String(!body.hidden));
+    });
 }
+// Native summary controls keep their own click and keyboard activation.
+$('workspace').addEventListener('click', event => {
+    if (!(event.target instanceof Element) || event.target.closest(interactive) || window.getSelection()?.toString()) return;
+    const details=event.target.closest('details');
+    if (details) details.open=!details.open;
+});
 disclosure('dsp-expand','dsp-details');
-for(let axis=0;axis<2;axis++) disclosure(`expand-${axis}`,`axis-body-${axis}`);
 function bounds(a: number) { return state?.control_mode?.[a] === 1 ? [-100 * (state.duty_limit[a] ?? 1), 100 * (state.duty_limit[a] ?? 1)] : [state?.minimum_mm?.[a] ?? -50, state?.maximum_mm?.[a] ?? 50]; }
 async function flushTargets() { if (sendingAxis >= 0)
     return; try {
@@ -177,7 +186,14 @@ for (let i=0;i<2;i++) {
     $(`ao-set-${i}`).addEventListener('input',()=>dirtyAnalog.add(i));
     $(`ao-apply-${i}`).onclick=async()=>{await act('analog',i,Number($<HTMLInputElement>(`ao-set-${i}`).value));dirtyAnalog.delete(i);};
 }
-for (let a = 0; a < 2; a++) {
+function addAxis(a: number) {
+    $('axis-cards').insertAdjacentHTML('beforeend',axisCard(a));
+    controllers.addAxis(a);
+    disclosure(`expand-${a}`,`axis-body-${a}`);
+    const canvas = $<HTMLCanvasElement>(`plot-${a}`);
+    plots.push(new PositionPlot(canvas));
+    plotStartSequences.push(0);
+    observer.observe(canvas);
     const slider = $<HTMLInputElement>(`slider-${a}`);
     slider.addEventListener('pointerdown', () => activeInputs.add(a));
     slider.addEventListener('input', () => target(a, Number(slider.value)));
@@ -228,8 +244,9 @@ function render(s: State) {
         $('fault').replaceChildren(document.createTextNode(`${s.fault} `));
         $('fault').append(' · See DSP actions on Dashboard');
     }
-    for (let a = 0; a < 2; a++) {
+    for (let a = 0; a < plots.length; a++) {
         const enabled = !!s.system_enabled && !!s.axis_enabled?.[a] && !s.fault, pwm = s.control_mode?.[a] === 1;
+        const owned = (s.runner_state === 1 || s.runner_state === 2) && !!(s.runner_axis_mask & (1 << a));
         const pos = s.position_mm?.[a] ?? 0, t = pwm ? (s.pwm_target?.[a] ?? 0) * 100 : s.target_mm?.[a] ?? 0;
         text(`position-${a}`, live ? pos.toFixed(2) : '—');
         text(`axis-status-${a}`, enabled ? (pwm ? 'PWM OUTPUT' : 'HOLD / TRACK') : 'DISABLED');
@@ -240,17 +257,17 @@ function render(s: State) {
             input.disabled = !live || !!s.fault;
         }
         $<HTMLSelectElement>(`mode-${a}`).value = pwm ? '1' : '0';
-        $<HTMLSelectElement>(`mode-${a}`).disabled = !live || enabled || !s.control_mode;
-        $<HTMLButtonElement>(`zero-${a}`).disabled = !live || enabled;
+        $<HTMLSelectElement>(`mode-${a}`).disabled = !live || owned || enabled || !s.control_mode;
+        $<HTMLButtonElement>(`zero-${a}`).disabled = !live || owned || enabled;
         const [minimum, maximum] = bounds(a);
         for (const id of [`slider-${a}`, `target-${a}`]) {
             const input = $<HTMLInputElement>(id);
-            input.disabled = !live;
+            input.disabled = !live || owned;
             if(pwm || id.startsWith('slider-')) { input.min = String(minimum); input.max = String(maximum); }
             else { input.removeAttribute('min'); input.removeAttribute('max'); }
             input.setAttribute('aria-label', `Axis ${a} target ${pwm ? 'duty percent' : 'position mm'}`);
         }
-        $<HTMLButtonElement>(`apply-${a}`).disabled = !live;
+        $<HTMLButtonElement>(`apply-${a}`).disabled = !live || owned;
         text(`target-label-${a}`, pwm ? 'Duty / %' : 'Target / mm');
         for (let i = 0; i < 5; i++) {
             const value = Number((minimum + (maximum - minimum) * i / 4).toFixed(2));
@@ -320,7 +337,7 @@ function render(s: State) {
 function renderResources(s: State, live: boolean) {
     const rows = $('resource-rows');
     rows.replaceChildren();
-    for (let a = 0; a < 2; a++) {
+    for (let a = 0; a < plots.length; a++) {
         const meta = project.axes[a], tr = document.createElement('tr'), enabled = s.system_enabled && s.axis_enabled[a] && !s.fault;
         tr.innerHTML = `<td>${escape(meta.name)}<small>DSP 00 / channel ${a}</small></td><td>${escape(meta.motor ?? `DC motor ${a}`)}<small>${escape(meta.encoder ?? `eQEP${a + 1}`)}</small></td><td>${(s.counts_per_mm?.[a] ?? 321.8467).toFixed(3)} counts/mm<small>${s.minimum_mm?.[a] ?? -50} … ${s.maximum_mm?.[a] ?? 50} mm</small></td><td>${live ? s.position_mm[a].toFixed(3) : '—'} mm<small>${live ? s.dsp.position[a] : '—'} counts</small></td><td>${meter(`resource-duty-${a}`, 'Output duty')}</td><td><span class="badge ${enabled ? 'on' : ''}">${enabled ? 'ENABLED' : 'DISABLED'}</span><small>${s.control_mode?.[a] === 1 ? 'PWM' : 'Position'}</small></td>`;
         rows.append(tr);
@@ -574,14 +591,18 @@ async function loadProject() { try {
     text('project-description', project.description ?? 'Project control dashboard');
     text('project-footer', `PROJECT / ${project.name.toUpperCase()}`);
     text('controller-source', `projects/${project.id}/controllers/*.yaml`);
-    for (let a = 0; a < 2; a++) {
-        document.querySelectorAll<HTMLElement>(`[data-axis-name="${a}"]`).forEach(el => el.textContent = project.axes[a].name);
-        document.querySelectorAll<HTMLElement>(`[data-axis-description="${a}"]`).forEach(el => el.textContent = project.axes[a].description ?? 'Linear actuator');
-    }
+    project.axes.forEach((axis,a) => {
+        addAxis(a);
+        $(`expand-${a}`).querySelector('span')!.textContent = axis.name || `Axis ${a}`;
+    });
+    $('remaining-axes').hidden = project.axes.length >= 6;
+    text('remaining-description', `Channels ${project.axes.length}–5 are available through ROS.`);
+    resizePlots();
     dirtyState = true;
 }
 catch {
-    message('Project metadata is unavailable.', true);
+    message('Project metadata unavailable. Retrying…', true);
+    setTimeout(loadProject, 4000);
 } }
 function connect() { clearTimeout(reconnectTimer); const old = socket; socket = undefined; old?.close(); socketConnected = false; const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?hz=${settings.streamHz}`); socket = ws; ws.onopen = () => { if (socket === ws)
     socketConnected = true; }; ws.onmessage = event => { if (socket !== ws)
@@ -589,8 +610,6 @@ function connect() { clearTimeout(reconnectTimer); const old = socket; socket = 
     receive(data); }; ws.onclose = () => { if (socket !== ws)
     return; socketConnected = false; dirtyState = true; reconnectTimer = setTimeout(connect, 1500); }; ws.onerror = () => ws.close(); }
 const observer = new ResizeObserver(resizePlots);
-for (let a = 0; a < 2; a++)
-    observer.observe($(`plot-${a}`));
 window.addEventListener('resize', resizePlots);
 setInterval(() => { if (activeTab === 'system' && performance.now() - lastSystemUpdate >= settings.statusSeconds * 1000)
     void updateSystem(); }, 250);

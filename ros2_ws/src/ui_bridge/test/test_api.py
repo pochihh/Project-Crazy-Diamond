@@ -126,9 +126,14 @@ def test_invalid_stream_rate_and_project_selection(tmp_path, monkeypatch):
     monkeypatch.setenv('DIAMOND_PROJECT', 'test')
     project = tmp_path / 'projects' / 'test'
     project.mkdir(parents=True)
-    manifest = {'id': 'test', 'axes': [{}, {}]}
-    (project / 'project.json').write_text(json.dumps(manifest))
-    assert load_project(tmp_path) == manifest
+    for count in (1, 2, 3, 6):
+        manifest = {'id': 'test', 'axes': [{} for _ in range(count)]}
+        (project / 'project.json').write_text(json.dumps(manifest))
+        assert load_project(tmp_path) == manifest
+    for invalid in ([], [{}] * 7, 'abc', [False]):
+        (project / 'project.json').write_text(json.dumps({'id': 'test', 'axes': invalid}))
+        with pytest.raises(ValueError):
+            load_project(tmp_path)
     (project / 'project.json').write_text('{"id":"other","axes":[]}')
     with pytest.raises(ValueError):
         load_project(tmp_path)
