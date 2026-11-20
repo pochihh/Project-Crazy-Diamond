@@ -1,0 +1,12 @@
+schema_version: 2
+id: test_profile
+type: pid
+sample_period_s: 0.00050000000000000001
+reference:
+  type: passthrough
+  max_rate_mm_s: 500
+parameters:
+  kp: 0.00050000000000000001
+  ki: 0.0001
+  kd: 1.0000000000000001e-05
+  d_filter_hz: 50

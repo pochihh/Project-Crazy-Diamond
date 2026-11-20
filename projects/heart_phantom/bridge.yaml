@@ -30,5 +30,5 @@ bridge:
     axis2.position_unit: mm
     axis2.reverse_direction: true
     axis2.counts_per_mm: 321.846662696944
-    axis2.minimum_mm: -50.0
-    axis2.maximum_mm: 50.0
+    axis2.minimum_mm: 0.0
+    axis2.maximum_mm: 35.0
