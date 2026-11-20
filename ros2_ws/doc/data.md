@@ -31,8 +31,9 @@ recording valid fault-state feedback until explicitly stopped. Closed recordings
 do not restart automatically.
 
 `/data/preview` carries latest/min/max values in catalog order for each drained
-batch. The web relay retains bounded recent batches, so a short pulse's extrema
-survive ordinary display-rate reduction. The Logger overlays checked numeric signals in one ten-second chart. Its colored checkboxes identify the traces. Their colors remain visible while a recording locks the signal selection. Signals with the same unit share a vertical scale; duty uses −1…1 and digital signals use 0…1. Other units auto-range together by unit. The first two units have labeled axes, and the strip below lists the bottom and top value for every unit. Adding or removing a signal preserves the available history. This is a preview, not an alternative
+batch. The Logger connects the latest samples in time order and leaves a gap for
+missing batches. A short excursion beyond both neighboring samples appears as
+a vertical mark at the batch timestamp. Digital traces use steps. The Logger overlays checked numeric signals in one ten-second chart. Its colored checkboxes identify the traces. Their colors remain visible while a recording locks the signal selection. Signals with the same unit share a vertical scale; duty uses −1…1 and digital signals use 0…1. Other units auto-range together by unit. The first two units have labeled axes, and the strip below lists the bottom and top value for every unit. Adding or removing a signal preserves the available history. This is a preview, not an alternative
 full-rate recording. Disconnected/overloaded clients may lose preview history.
 
 ## Program files and CSV contract
@@ -109,8 +110,13 @@ bridge gate. Every reported overrun/missed period remains logged under either po
 
 
 After a successful CSV load, the data server publishes `/data/csv_preview`
-(`interfaces/msg/CsvPreview`, reliable, transient local depth 1). It contains
-per-channel minima and maxima over at most 256 consecutive row groups.
+(`interfaces/msg/CsvPreview`, reliable, transient local depth 1). Up to 50,000
+command values (rows × channels), the Runner plots every tick. Analog traces
+connect consecutive values and digital traces hold each state for its tick.
+Larger files use at most 1,024 time bins. The analog line joins the midranges
+and the shaded band shows the minima and maxima. On digital traces a shaded
+interval means both states occurred within that bin. The final bin uses its
+actual duration. Playback always uses the full program.
 The Data page matches the preview to the loaded bridge program ID. Channel
-checkboxes affect only this view. All checked commands share one chart with time in seconds from row zero. Each bin shows its actual minima and maxima, including a shorter final bin. A direct generated program has no CSV preview.
+checkboxes affect only this view. A direct generated program has no CSV preview.
 Reload a CSV to regenerate its preview after the data service restarts.

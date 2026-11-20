@@ -117,7 +117,7 @@ export function dataTools(){
                 if(frame.sequence<=lastSequence) continue;
                 if(frame.timestamp_us<lastTime) history.length=0;
                 lastSequence=frame.sequence;lastTime=frame.timestamp_us;
-                history.push({time:lastTime/1e6,minimum:frame.minimum,maximum:frame.maximum,latest:frame.latest});
+                history.push({time:lastTime/1e6,sequence:frame.sequence,minimum:frame.minimum,maximum:frame.maximum,latest:frame.latest});
             }
             const end=lastTime/1e6,start=end-10;
             while(history.length && (history[0].time<start || history.length>600)) history.shift();

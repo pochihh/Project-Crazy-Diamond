@@ -59,10 +59,17 @@ def library_path(directory, name):
     return path
 
 
-def preview_bins(channels, values, max_bins=256):
+def preview_bins(channels, values, max_bins=None):
     width = len(channels)
     rows = len(values) // width
+    # Full resolution for ordinary profiles. Bound the one-time ROS/UI transfer for large files.
+    if max_bins is None:
+        max_bins = rows if len(values) <= 50_000 else 1024
     stride = (rows + max_bins - 1) // max_bins
+    names = {number: name for name, number in COMMANDS.items()}
+    metadata = dict(rows=rows, rows_per_bin=stride, channels=[names[c] for c in channels])
+    if stride == 1:
+        return dict(**metadata, minimum=values, maximum=values)
     low, high = [], []
     for start in range(0, rows, stride):
         end = min(rows, start + stride) * width
@@ -70,6 +77,4 @@ def preview_bins(channels, values, max_bins=256):
             samples = values[start * width + column:end:width]
             low.append(min(samples))
             high.append(max(samples))
-    names = {number: name for name, number in COMMANDS.items()}
-    return dict(rows=rows, rows_per_bin=stride, channels=[names[c] for c in channels],
-                minimum=low, maximum=high)
+    return dict(**metadata, minimum=low, maximum=high)

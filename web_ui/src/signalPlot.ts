@@ -1,6 +1,6 @@
 // Both previews use seconds on X and one linear Y scale per physical unit.
 export type Trace = {name: string; unit: string; index: number};
-export type PlotFrame = {time: number; end?: number; latest?: number[]; minimum: number[]; maximum: number[]};
+export type PlotFrame = {time: number; end?: number; sequence?: number; latest?: number[]; minimum: number[]; maximum: number[]};
 type Extent = {low: number; high: number};
 type Window = {start: number; end: number; relative?: boolean};
 type Style = {text: string; grid: string; font: string; dark: boolean};
@@ -43,6 +43,74 @@ export function unitScales(traces: Trace[], frames: PlotFrame[]) {
     return scales;
 }
 const numberText = (v: number) => String(Number(v.toPrecision(6)));
+
+type Pixel = (v:number) => number;
+
+export function drawSamples(ctx:CanvasRenderingContext2D, frames:PlotFrame[], trace:Trace, x:Pixel, y:Pixel) {
+    const i=trace.index, digital=trace.unit==='bool';
+    let previous:PlotFrame|undefined;
+    ctx.beginPath();
+    for (const frame of frames) {
+        const value=frame.latest![i], xx=x(frame.time);
+        if (!Number.isFinite(value)) {previous=undefined;continue;}
+        const last=previous?.latest?.[i];
+        const connected=previous && last!==undefined && (previous.end===frame.time || (frame.time-previous.time<=.10 &&
+            (frame.sequence===undefined || frame.sequence-1===previous.sequence)));
+        if (connected) {
+            if (digital && value!==last) ctx.lineTo(xx,y(last));
+            ctx.lineTo(xx,y(value));
+        } else ctx.moveTo(xx,y(value));
+        // Live batches can contain an excursion that neither endpoint captured.
+        const lo=frame.minimum[i], hi=frame.maximum[i];
+        const lower=Math.min(connected ? last : value,value), upper=Math.max(connected ? last : value,value);
+        if (lo<lower || hi>upper) {
+            if (lo<lower) {ctx.moveTo(xx,y(lower));ctx.lineTo(xx,y(lo));}
+            if (hi>upper) {ctx.moveTo(xx,y(upper));ctx.lineTo(xx,y(hi));}
+            ctx.moveTo(xx,y(value));
+        }
+        previous=frame;
+    }
+    if (previous?.end!==undefined) ctx.lineTo(x(previous.end),y(previous.latest![i]));
+    ctx.stroke();
+}
+
+export function drawRanges(ctx:CanvasRenderingContext2D, frames:PlotFrame[], trace:Trace, x:Pixel, y:Pixel) {
+    const i=trace.index;
+    ctx.fillStyle=ctx.strokeStyle;
+    if (trace.unit==='bool') {
+        // A mixed bin contains both states. Its exact switching times are unavailable.
+        ctx.beginPath();
+        let last:number|undefined;
+        for (const f of frames) {
+            const start=x(f.time), end=x(f.end!), lo=f.minimum[i], hi=f.maximum[i];
+            if (lo!==hi) {
+                ctx.globalAlpha=.3;
+                ctx.fillRect(start,y(hi),Math.max(1,end-start),y(lo)-y(hi));
+                ctx.globalAlpha=1;
+                last=undefined;
+            } else {
+                ctx.moveTo(start,y(last??lo));ctx.lineTo(start,y(lo));ctx.lineTo(end,y(lo));
+                last=lo;
+            }
+        }
+        ctx.stroke();
+        return;
+    }
+    const middle=(f:PlotFrame)=>x((f.time+f.end!)/2);
+    const first=frames[0], last=frames[frames.length-1];
+    ctx.beginPath();
+    ctx.moveTo(x(first.time),y(first.maximum[i]));
+    for (const f of frames) ctx.lineTo(middle(f),y(f.maximum[i]));
+    ctx.lineTo(x(last.end!),y(last.maximum[i]));ctx.lineTo(x(last.end!),y(last.minimum[i]));
+    for (let j=frames.length-1;j>=0;j--) ctx.lineTo(middle(frames[j]),y(frames[j].minimum[i]));
+    ctx.lineTo(x(first.time),y(first.minimum[i]));
+    ctx.globalAlpha=.24;ctx.fill();ctx.globalAlpha=1;
+    const midValue=(f:PlotFrame)=>y(f.minimum[i]/2+f.maximum[i]/2);
+    ctx.beginPath();
+    ctx.moveTo(x(first.time),midValue(first));
+    for (const f of frames) ctx.lineTo(middle(f),midValue(f));
+    ctx.lineTo(x(last.end!),midValue(last));ctx.stroke();
+}
 
 export class SignalPlot {
     private canvas = document.createElement('canvas');
@@ -108,34 +176,10 @@ export class SignalPlot {
         for(const trace of traces) {
             const {low,high}=scales.get(trace.unit)!;
             const y=(v:number)=>bottom-(v-low)/(high-low)*(bottom-top);
-            const i=trace.index;
             ctx.strokeStyle=`hsl(${traceHue(trace.name)} 62% ${style.dark?70:35}%)`;
             ctx.lineWidth=1.6;
-            ctx.beginPath();
-            let previous:PlotFrame|undefined;
-            for(const frame of frames) {
-                const v=frame.latest?.[i], lo=frame.minimum[i], hi=frame.maximum[i], xx=x(frame.time);
-                if(!Number.isFinite(lo)||!Number.isFinite(hi)) {previous=undefined;continue;}
-                if(frame.end!==undefined) {
-                    // CSV bins carry extrema only. Draw both bounds over their actual span.
-                    const end=x(frame.end);
-                    ctx.moveTo(xx,y(lo));ctx.lineTo(end,y(lo));
-                    if(hi!==lo){ctx.moveTo(xx,y(hi));ctx.lineTo(end,y(hi));ctx.moveTo((xx+end)/2,y(lo));ctx.lineTo((xx+end)/2,y(hi));}
-                    if(previous && previous.maximum[i]===previous.minimum[i] && lo===hi) {
-                        ctx.moveTo(xx,y(previous.maximum[i]));ctx.lineTo(xx,y(lo));
-                    }
-                } else if(v!==undefined && Number.isFinite(v)) {
-                    if(previous?.latest && frame.time-previous.time<=.10) {
-                        const last=previous.latest[i];
-                        ctx.moveTo(x(previous.time),y(last));
-                        if(trace.unit==='bool') ctx.lineTo(xx,y(last));
-                        ctx.lineTo(xx,y(v));
-                    }
-                    ctx.moveTo(xx,y(lo));ctx.lineTo(xx,y(hi)+(lo===hi?.5:0));
-                }
-                previous=frame;
-            }
-            ctx.stroke();
+            if (frames[0].latest) drawSamples(ctx,frames,trace,x,y);
+            else drawRanges(ctx,frames,trace,x,y);
         }
         ctx.restore();
     }

@@ -12,7 +12,7 @@ import time
 import uuid
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import rclpy
@@ -190,11 +190,12 @@ def create_app(ros, recordings: Path, static: Path, project=None):
     async def signals(): return await data_service('signals',SignalCatalog.Request())
 
     @app.get('/api/data/csv_preview')
-    async def csv_preview(program_id: int):
+    def csv_preview(program_id: int):
         preview = ros.csv_preview
         if preview.get('program_id') != program_id or ros.state.get('program_id') != program_id:
             raise HTTPException(404, 'No CSV preview for this program')
-        return preview
+        # Preview fields are already JSON-native. Encode the snapshot off the web event loop.
+        return JSONResponse(preview)
 
     @app.get('/api/data/programs')
     async def programs(): return await data_service('programs',ListPrograms.Request())

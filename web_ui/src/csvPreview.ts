@@ -22,7 +22,9 @@ export function csvPreview(plot:SignalPlot) {
             const data:Preview=await response.json();
             if (key!==next) return;
             const span=data.rows/rate;
-            caption.textContent=`${name} · ${data.rows.toLocaleString()} ticks · ${span.toFixed(3)} s · min/max per ${data.rows_per_bin} tick(s)`;
+            const exact = data.rows_per_bin === 1;
+            const detail = exact ? 'every tick' : `range per ${data.rows_per_bin} ticks`;
+            caption.textContent=`${name} · ${data.rows.toLocaleString()} ticks · ${span.toFixed(3)} s · ${detail}`;
             const inputs: HTMLInputElement[]=[];
             const traces: Trace[]=data.channels.map((name,index)=>({name,index,unit:name.endsWith('_mm')?'mm':name.endsWith('_deg')?'deg':name.endsWith('_duty')?'duty':name.startsWith('do')?'bool':'code'}));
             const update=()=>{plot.select(traces.filter((_,i)=>inputs[i].checked));plot.draw();};
@@ -34,9 +36,12 @@ export function csvPreview(plot:SignalPlot) {
             }
             const frames:PlotFrame[]=[];
             const n=traces.length;
-            for(let row=0,offset=0;row<data.rows;row+=data.rows_per_bin,offset+=n)
+            for(let row=0,offset=0;row<data.rows;row+=data.rows_per_bin,offset+=n) {
+                const minimum=data.minimum.slice(offset,offset+n);
                 frames.push({time:row/rate,end:Math.min(row+data.rows_per_bin,data.rows)/rate,
-                    minimum:data.minimum.slice(offset,offset+n),maximum:data.maximum.slice(offset,offset+n)});
+                    latest:exact ? minimum : undefined,minimum,
+                    maximum:exact ? minimum : data.maximum.slice(offset,offset+n)});
+            }
             plot.data(frames,{start:0,end:span});update();
         } catch (error) {
             if (next===key) {

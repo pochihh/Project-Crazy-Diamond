@@ -29,3 +29,14 @@ def test_preview_retains_one_tick_pulse_and_final_short_bin():
     preview = preview_bins([12, 0], [0, 3, 1, -8, 0, 2, 0, 1, 1, 4], max_bins=2)
     assert preview == dict(rows=5, rows_per_bin=3, channels=['do0', 'axis0_reference_mm'],
                            minimum=[0, -8, 0, 1], maximum=[1, 3, 1, 4])
+
+
+def test_preview_budget_counts_all_channels_and_preserves_peaks():
+    from data_tools.csv_program import preview_bins
+    values = [0.25, 0] * 25_000
+    values[101] = 1
+    full = preview_bins([2, 12], values)
+    assert full['rows_per_bin'] == 1 and full['minimum'] == full['maximum'] == values
+    grouped = preview_bins([2, 12], values + [0.75, 0])
+    assert grouped['rows_per_bin'] > 1 and len(grouped['maximum']) <= 2 * 1024
+    assert max(grouped['maximum'][1::2]) == 1 and grouped['maximum'][-2] == 0.75

@@ -146,7 +146,38 @@ test('PWM plot keeps measured position and omits the unrelated position target',
   assert.equal(f.paths.at(-1).length,1);
 });
 
-const {unitScales,traceHue}=await source('signalPlot');
+const {unitScales,traceHue,drawSamples,drawRanges}=await source('signalPlot');
+const identity=value=>value;
+const analog={index:0,unit:'mm'}, digital={index:0,unit:'bool'};
+const frame=(time,latest,lo=latest,hi=latest)=>({time,latest:[latest],minimum:[lo],maximum:[hi]});
+
+test('sample traces join a ramp without range bars and break at dropped batches',()=>{
+  const frames=[frame(0,1),frame(.02,2,1.1,2),frame(.04,3,2.1,3),frame(.08,4)];
+  [1,2,3,5].forEach((sequence,i)=>frames[i].sequence=sequence);
+  const f=fakeCanvas();
+  drawSamples(f.canvas.getContext(),frames,analog,identity,identity);
+  assert.deepEqual(f.paths[0],[['M',0,1],['L',.02,2],['L',.04,3],['M',.08,4]]);
+});
+
+test('digital traces show exact command duration and short live excursions',()=>{
+  const f=fakeCanvas(), ctx=f.canvas.getContext();
+  const ticks=[frame(0,0),frame(.0005,1),frame(.001,0)];
+  ticks.forEach((v,i)=>v.end=(i+1)/2000);
+  drawSamples(ctx,ticks,digital,identity,identity);
+  assert.deepEqual(f.paths[0],[['M',0,0],['L',.0005,0],['L',.0005,1],['L',.001,1],['L',.001,0],['L',.0015,0]]);
+  drawSamples(ctx,[frame(0,0),frame(.02,0,0,1)],digital,identity,identity);
+  assert.ok(f.paths[1].some(([cmd,x,y])=>cmd==='L'&&x===.02&&y===1));
+});
+
+test('grouped analog previews have a continuous midrange and digital pulses occupy the observed bin',()=>{
+  const f=fakeCanvas(),ctx=f.canvas.getContext(),rects=[];
+  ctx.fill=()=>{};ctx.fillRect=(...rect)=>rects.push(rect);
+  const bins=[{time:0,end:2,minimum:[0],maximum:[0]},{time:2,end:3,minimum:[0],maximum:[1]}];
+  drawRanges(ctx,bins,analog,identity,identity);
+  assert.deepEqual(f.paths.at(-1),[['M',0,0],['L',1,0],['L',2.5,.5],['L',3,.5]]);
+  drawRanges(ctx,bins,digital,identity,value=>1-value);
+  assert.deepEqual(rects,[[2,0,1,1]]);
+});
 test('overlaid signals share native units and keep narrow pulses and signed duty in range',()=>{
   const traces=['mm','bool','mm','duty','code'].map((unit,index)=>({name:'v'+index,unit,index}));
   const frames=[{time:0,latest:[-3,0,10,-.1,3],minimum:[-4,0,9,-.5,3],maximum:[-2,1,11,0,3]}];
