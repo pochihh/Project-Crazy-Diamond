@@ -26,7 +26,8 @@ export function controllerDiagram(host: HTMLElement) {
         if (!source) return;
         try {
             const {default:mermaid}=await import('mermaid');
-            mermaid.initialize({startOnLoad:false,securityLevel:'strict',theme:'neutral',htmlLabels:false,block:{padding:12}});
+            mermaid.initialize({startOnLoad:false,securityLevel:'strict',theme:'neutral',htmlLabels:false,block:{padding:12},
+                themeCSS:'.edgeLabel { translate: 0 -10px; }'});
             const {svg}=await mermaid.render('controller-graph-'+version,source);
             if(version!==generation) return;
             const url='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg);

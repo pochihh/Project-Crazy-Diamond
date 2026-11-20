@@ -232,7 +232,7 @@ input.trace-check:checked:disabled::after {
 .file-row { display: flex; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere }
 .host-meters { grid-template-columns: minmax(0,1.1fr) minmax(0,.8fr) minmax(0,1.1fr) }
 .host-capacity { display: grid; gap: 14px }
-.host-info th { width: 30%; padding-inline-start: 0 }
+.host-info th { width: 1%; white-space: nowrap; padding-inline-start: 0 }
 .host-info td { padding-inline-end: 0 }
 .host-info table { font-variant-numeric: tabular-nums }
 .host-card>.eyebrow { display: block; font-weight: 600; margin-bottom: 14px }
