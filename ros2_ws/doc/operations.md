@@ -99,7 +99,7 @@ wait still runs. `tests/phantom_startup.py` checks this at nonzero raw encoder c
 
 Open the PCD UI at `http://<pi-address>:8000/`. Axis controls are independent of the
 optional robot panel. Expand an axis to use its slider, numeric target, zero or plot.
-The settings column stays visible while navigating. It initially shows Web settings. An axis gear selects that axis for tuning, and Settings returns to the web preferences. On narrow screens the column docks below the workspace. The light meter band
+On each collapsed card, position is on the left, target and error are in the middle, and the gear, Enable switch and duty meter are on the right. Expanding adds Reset zero and the target entry on one row, followed by the ruler slider and position plot. The settings column stays visible while navigating. It initially shows Web settings. An axis gear selects that axis for Position/PWM mode and controller tuning, and Settings returns to the web preferences. On narrow screens the column docks below the workspace. The light meter band
 tracks recent magnitude peaks and falls at 25 percentage points per second.
 
 The DSP card shows INIT until feedback is synchronized, IDLE for disarmed, RUNNING

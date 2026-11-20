@@ -251,7 +251,7 @@ function render(s: State) {
             input.setAttribute('aria-label', `Axis ${a} target ${pwm ? 'duty percent' : 'position mm'}`);
         }
         $<HTMLButtonElement>(`apply-${a}`).disabled = !live;
-        text(`target-label-${a}`, pwm ? 'PWM TARGET / %' : 'TARGET / mm');
+        text(`target-label-${a}`, pwm ? 'Duty / %' : 'Target / mm');
         for (let i = 0; i < 5; i++) {
             const value = Number((minimum + (maximum - minimum) * i / 4).toFixed(2));
             text(`ruler-${a}-${i}`, `${i === 4 && value > 0 ? '+' : ''}${value}${i === 4 ? (pwm ? ' %' : ' mm') : ''}`);
@@ -547,7 +547,13 @@ async function updateSystem() {
         systemPending = false;
     }
 }
-function resizePlots() { const style = getComputedStyle(document.documentElement); plots.forEach(p => { p.colors = { ink: style.getPropertyValue('--ink'), grid: style.getPropertyValue('--line'), text: style.getPropertyValue('--muted') }; p.resize(devicePixelRatio); }); }
+function resizePlots() {
+    const style = getComputedStyle(document.documentElement);
+    const palette = {ink:style.getPropertyValue('--ink'), grid:style.getPropertyValue('--line'),
+        text:style.getPropertyValue('--muted'), measured:style.getPropertyValue('--sage-ink'), font:'11px '+style.getPropertyValue('--mono')};
+    data.setPlotStyle(palette);
+    plots.forEach(p => {p.colors=palette; p.resize(devicePixelRatio);});
+}
 const darkMedia = matchMedia('(prefers-color-scheme: dark)');
 function applySettings() { document.documentElement.dataset.theme = settings.theme === 'system' ? (darkMedia.matches ? 'dark' : 'light') : settings.theme; $('performance').hidden = !settings.showPerformance; text('system-refresh', `REFRESH / ${settings.statusSeconds} s`); resizePlots(); }
 function saveSettings() { try {

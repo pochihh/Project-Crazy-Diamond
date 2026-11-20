@@ -4,7 +4,7 @@ const paths: Record<string, string> = {
     resources: '<rect x="4" y="4" width="16" height="16"/><path d="M4 10h16M10 4v16M4 15h16"/>',
     logger: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="3" fill="currentColor"/>',
     runner: '<path d="m7 3 14 9-14 9Z"/>',
-    settings: '<circle cx="12" cy="12" r="4"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2"/>',
+    settings: '<path d="M9.5 3l.6-1h3.8l.6 2 2 .9 2-.6 1.9 3.3-1.4 1.5.2 2.3 1.4 1.5-2 3.4-2-.5-1.9 1-.6 2.2h-3.8l-.7-2.2-2-1-2 .5-1.9-3.4 1.4-1.5v-2.3L3.7 8l1.9-3.3 2 .5 2-1z" transform="translate(0 1)"/><circle cx="12" cy="12" r="3"/>',
     diamond: '<path d="m12 2 10 10-10 10L2 12Z"/><path d="m12 7 5 5-5 5-5-5Z"/>',
     stop: '<rect x="5" y="5" width="14" height="14" fill="currentColor" stroke="none"/>',
 };
@@ -12,19 +12,42 @@ export const icon = (name: string) => `<svg viewBox="0 0 24 24" fill="none" stro
 export const toggle = (id: string, label: string) => `<label class="switch"><input type="checkbox" id="${id}" aria-label="${label}"><span class="switch-track"></span><span class="switch-label">${label}</span></label>`;
 export const meter = (id: string, label: string) => `<div class="meter-label"><span>${label}</span><strong id="${id}-value">—</strong></div><div class="meter" id="${id}" role="progressbar" aria-label="${label}" aria-valuemin="0" aria-valuemax="100"><span class="meter-track"><i></i></span></div>`;
 
-const axisControl = (a: number) => `<div class="axis-control">
-  <div class="ruler">${['−50', '−25', '0', '25', '+50 mm'].map((value, i) => `<span id="ruler-${a}-${i}">${value}</span>`).join('')}</div>
-  <div class="slider-wrap"><input id="slider-${a}" type="range" min="-50" max="50" step="0.1" value="0" aria-label="Axis ${a} target position"><span class="actual-marker" id="marker-${a}" aria-hidden="true" title="Measured position"></span></div>
-  <div class="target-row"><label id="target-label-${a}" for="target-${a}">TARGET / mm</label><input id="target-${a}" type="number" min="-50" max="50" step="0.1" value="0" aria-label="Axis ${a} target value"><button id="apply-${a}">SET</button></div>
-</div>`;
 const axis = (a: number) => `<article id="axis-card-${a}" class="axis panel">
-  <header class="axis-title"><button class="disclosure" id="expand-${a}" aria-expanded="false" aria-controls="axis-body-${a}"><span data-axis-name="${a}">Axis ${a}</span></button><span id="axis-status-${a}" class="badge">DISABLED</span><button id="controller-open-${a}" class="gear" aria-label="Settings for axis ${a}" aria-controls="controller-panel" aria-pressed="false">${icon('settings')}</button></header>
-  <div class="axis-summary"><div><span class="eyebrow">POSITION</span><div class="position"><strong id="position-${a}">—</strong><span>mm</span></div></div>
-  <dl class="axis-values"><dt>Target</dt><dd id="target-read-${a}">—</dd><dt id="error-label-${a}">Error</dt><dd id="error-${a}">—</dd></dl>
-  <div class="axis-drive"><label class="axis-enable"><input type="checkbox" id="enable-${a}" aria-label="Enable motor ${a}"><span>Enable</span></label>${meter(`duty-meter-${a}`,'Output duty')}</div></div>
-  <div id="axis-body-${a}" class="axis-body" hidden><div class="axis-tools"><button id="zero-${a}" class="compact" title="Disable and move the axis before capturing its zero">Reset zero</button>
-  <label class="mode-label">Mode<select id="mode-${a}" aria-label="Axis ${a} control mode"><option value="0">Position</option><option value="1">PWM / duty</option></select></label></div>
-  ${axisControl(a)}<div class="axis-plot"><div class="plot-top"><span class="eyebrow">POSITION / 10 s</span><span class="legend"><i></i>Measured <span id="target-legend-${a}"><b></b>Target</span></span></div><canvas id="plot-${a}" aria-label="Axis ${a} position history" role="img"></canvas></div></div></article>`;
+  <div class="axis-summary">
+    <div class="axis-reading">
+      <button class="disclosure" id="expand-${a}" aria-expanded="false" aria-controls="axis-body-${a}"><span data-axis-name="${a}">Axis ${a}</span></button>
+      <span class="eyebrow">Position</span>
+      <div class="position"><strong id="position-${a}">—</strong><span>mm</span></div>
+    </div>
+    <dl class="axis-values">
+      <dt>Target</dt><dd id="target-read-${a}">—</dd>
+      <dt id="error-label-${a}">Error</dt><dd id="error-${a}">—</dd>
+    </dl>
+    <div class="axis-drive">
+      <div class="axis-actions">
+        <span id="axis-status-${a}" class="badge">DISABLED</span>
+        <button id="controller-open-${a}" class="gear" aria-label="Settings for axis ${a}" aria-controls="controller-panel" aria-pressed="false">${icon('settings')}</button>
+      </div>
+      <label class="axis-enable"><span>Enable</span><input type="checkbox" role="switch" id="enable-${a}" aria-label="Enable motor ${a}"><span class="enable-track" aria-hidden="true"></span></label>
+      <div class="axis-duty">${meter(`duty-meter-${a}`,'Output duty')}</div>
+    </div>
+  </div>
+  <div id="axis-body-${a}" class="axis-body" hidden>
+    <div class="axis-commands">
+      <button id="zero-${a}" title="Disable and move the axis before capturing its zero">Reset zero</button>
+      <div class="target-row">
+        <label id="target-label-${a}" for="target-${a}">Target / mm</label>
+        <input id="target-${a}" type="number" min="-50" max="50" step="0.1" value="0" aria-label="Axis ${a} target value">
+        <button id="apply-${a}">Set</button>
+      </div>
+    </div>
+    <div class="axis-control">
+      <div class="ruler">${['−50', '−25', '0', '25', '+50 mm'].map((v,i) => `<span id="ruler-${a}-${i}">${v}</span>`).join('')}</div>
+      <div class="slider-wrap"><input id="slider-${a}" type="range" min="-50" max="50" step="0.1" value="0" aria-label="Axis ${a} target position"><span class="actual-marker" id="marker-${a}" aria-hidden="true" title="Measured position"></span></div>
+    </div>
+    <div class="axis-plot"><div class="plot-top"><span class="eyebrow">Position / 10 s</span><span class="legend"><i></i>Measured <span id="target-legend-${a}"><b></b>Target</span></span></div><canvas id="plot-${a}" aria-label="Axis ${a} position history" role="img"></canvas></div>
+  </div>
+</article>`;
 export const layout = `<div class="shell"><nav class="sidebar" aria-label="Main views"><div class="brand" title="Project Crazy Diamond">${icon('diamond')}</div><div class="nav-main">${[['control','Dashboard'],['data','Data'],['system','System'],['resources','Resources']].map(([id,label])=>`<button class="nav-button ${id==='control'?'active':''}" data-tab="${id}" ${id==='control'?'aria-current="page"':''}>${label}</button>`).join('')}</div><button id="settings-button" class="nav-button settings-button active" aria-pressed="true" aria-controls="settings-panel">Settings</button></nav>
 <header class="topbar"><div class="project-title"><span class="eyebrow">PROJECT / <span class="pcd-wordmark">CRAZY DIAMOND</span></span><h1 id="project-name">Heart Phantom</h1></div><div class="topbar-status"><span id="connection" class="connection">CONNECTING</span><span id="source" class="fine">Waiting for bridge</span></div><button id="stop" class="stop" title="Software stop for all motor outputs">${icon('stop')} STOP ALL</button></header>
 <main id="workspace"><div class="main-content"><div id="message" role="status" hidden></div><div id="fault" role="alert" hidden></div>
