@@ -1,4 +1,5 @@
 """Non-RT Linux usage sampling; cached so multiple browser tabs share one sample."""
+import platform
 import shutil
 import time
 from pathlib import Path
@@ -10,6 +11,16 @@ class SystemStatus:
         self.previous = {}
         self.updated = -1.0
         self.cached = {}
+        try:
+            model = (proc / 'device-tree/model').read_text().rstrip('\0\n')
+        except OSError:
+            model = None
+        try:
+            distribution = platform.freedesktop_os_release().get('PRETTY_NAME')
+        except OSError:
+            distribution = None
+        self.host = {'model': model, 'hostname': platform.node(), 'architecture': platform.machine(),
+                     'os': distribution or platform.system()}
 
     def snapshot(self):
         now = time.monotonic()

@@ -374,7 +374,7 @@ def create_app(ros, recordings: Path, static: Path, project=None):
                 'topics': [{'name': n, 'types': t} for n, t in ros.get_topic_names_and_types()],
                 'load_average': os.getloadavg(), 'cpu_count': os.cpu_count(),
                 'kernel': os.uname().release, 'ros_distro': os.environ.get('ROS_DISTRO', 'unknown'),
-                'usage': status.snapshot()}
+                'host': status.host, 'usage': status.snapshot()}
 
     if static.is_dir():
         app.mount('/', StaticFiles(directory=static, html=True), name='ui')

@@ -540,13 +540,20 @@ async function updateSystem() {
             setMeter(`host-${key}`, value?.percent ?? null);
             text(`host-${key}-detail`, value ? `${bytes(value.used)} / ${bytes(value.total)}` : 'Usage unavailable');
         }
-        setMeter('host-gpu', usage.gpu_percent ?? null);
-        text('host-gpu-detail', usage.gpu_percent === null || usage.gpu_percent === undefined ? 'Utilisation not exposed by this driver' : 'Driver-reported GPU utilisation');
-        text('host-platform', `ROS 2 ${info.ros_distro} · ${info.kernel}`);
+        const gpu = usage.gpu_percent;
+        const showGpu = Number.isFinite(gpu) && gpu > 0;
+        $('host-gpu-card').hidden = !showGpu;
+        if (showGpu) setMeter('host-gpu', gpu);
+        const host = info.host ?? {};
+        for (const key of ['model','hostname','os','architecture'])
+            text(`host-info-${key}`, host[key] || '—');
+        text('host-info-kernel', info.kernel || '—');
+        text('host-info-ros', info.ros_distro || '—');
+        $('host-error').hidden = true;
         const cores: (number | null)[] = usage.cpu_cores ?? [];
         const coreList = $('host-cores');
         if (coreList.children.length !== cores.length) {
-            coreList.innerHTML = cores.map((_, i) => `<div class="core-line"><div id="core-tags-${i}" class="core-tags"></div>${meter(`core-${i}`, `CPU ${i}`)}</div>`).join('');
+            coreList.innerHTML = cores.map((_, i) => `<div class="core-line">${meter(`core-${i}`, `CPU ${i}`, `core-tags-${i}`)}</div>`).join('');
         }
         cores.forEach((value, i) => {
             const pinned = i === 3 && state?.bridge_alive && !state.mock && state.fault !== 'Real-time scheduling or memory setup failed';
@@ -562,7 +569,7 @@ async function updateSystem() {
         renderTopics(info.topics);
     }
     catch {
-        text('host-platform', 'Host status unavailable — retrying');
+        $('host-error').hidden = false;
     }
     finally {
         systemPending = false;
