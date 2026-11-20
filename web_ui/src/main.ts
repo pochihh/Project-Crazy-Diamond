@@ -4,6 +4,7 @@ import {dataTools, type DataState} from './data';
 import { command } from './command';
 import { PositionPlot } from './plot';
 import { layout, meter, axisCard } from './layout';
+import { bindInspectorDivider } from './inspectorDivider';
 import { controllerPanel, type ControllerState } from './controllers';
 import { defaults, readSettings, type Settings } from './settings';
 type State = ControllerState & DataState & {
@@ -74,6 +75,7 @@ const inputValue = (id: string, value: string) => { const el = $<HTMLInputElemen
     el.value = value; };
 $('app').innerHTML = layout;
 const controllers = controllerPanel();
+bindInspectorDivider($('inspector-divider'));
 const data=dataTools();
 let project: Project = { id: 'heart_phantom', name: 'Heart Phantom', axes: [] };
 let settings: Settings;
@@ -217,6 +219,7 @@ $('dsp-stop').onclick = () => { pendingTargets.clear(); void act('dsp_disarm'); 
 $('dsp-clear').onclick = () => void act('dsp_clear');
 function closeTopics() { const sockets = [...topicSockets.values()]; topicSockets.clear(); sockets.forEach(ws => ws.close()); }
 document.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach(button => button.onclick = () => {
+    if (button.dataset.tab !== activeTab) controllers.clear();
     activeTab = button.dataset.tab!;
     data.tab(activeTab);
     document.querySelectorAll<HTMLElement>('[data-tab]').forEach(b => { const on = b === button; b.classList.toggle('active', on); if (on)

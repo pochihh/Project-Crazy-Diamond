@@ -32,7 +32,7 @@ do not restart automatically.
 
 `/data/preview` carries latest/min/max values in catalog order for each drained
 batch. The web relay retains bounded recent batches, so a short pulse's extrema
-survive ordinary display-rate reduction. The Logger overlays checked numeric signals in one ten-second chart. Its colored checkboxes identify the traces. Signals with the same unit share a vertical scale; duty uses −1…1 and digital signals use 0…1. Other units auto-range together by unit. The first two units have labeled axes, and the strip below lists the bottom and top value for every unit. Adding or removing a signal preserves the available history. This is a preview, not an alternative
+survive ordinary display-rate reduction. The Logger overlays checked numeric signals in one ten-second chart. Its colored checkboxes identify the traces. Their colors remain visible while a recording locks the signal selection. Signals with the same unit share a vertical scale; duty uses −1…1 and digital signals use 0…1. Other units auto-range together by unit. The first two units have labeled axes, and the strip below lists the bottom and top value for every unit. Adding or removing a signal preserves the available history. This is a preview, not an alternative
 full-rate recording. Disconnected/overloaded clients may lose preview history.
 
 ## Program files and CSV contract

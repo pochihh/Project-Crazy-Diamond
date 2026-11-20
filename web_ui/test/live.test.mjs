@@ -156,3 +156,13 @@ test('overlaid signals share native units and keep narrow pulses and signed duty
   assert.deepEqual(unitScales([traces[2]],frames).get('mm'),{low:9,high:11});
   assert.notEqual(traceHue('axis0_reference_mm'),traceHue('axis1_reference_mm'));
 });
+
+const {inspectorWidths} = await source('inspectorDivider');
+test('inspector restores a preferred desktop width within the current viewport', () => {
+  assert.equal(inspectorWidths(1280).width,282);
+  assert.equal(inspectorWidths(1280,400).width,400);
+  assert.equal(inspectorWidths(800,600).width,384);
+  assert.equal(inspectorWidths(1600,600).width,600);
+  assert.equal(inspectorWidths(1280,5).width,208);
+  assert.equal(inspectorWidths(800,NaN).width,240);
+});

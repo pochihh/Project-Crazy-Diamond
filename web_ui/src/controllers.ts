@@ -153,5 +153,5 @@ export function controllerPanel() {
         gear.dataset.axis = String(a);
         gear.onclick = () => select(a);
     }
-    return {addAxis, render(s: ControllerState, connected: boolean){update(s);live=connected;paint();}};
+    return {addAxis, clear: () => select(null), render(s: ControllerState, connected: boolean){update(s);live=connected;paint();}};
 }
