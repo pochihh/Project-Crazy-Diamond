@@ -12,6 +12,7 @@ Thumbs.db
 .env.*
 !.env.example
 .local/
+/.codegraph/
 
 # Python / FastAPI / ROS Python packages
 __pycache__/

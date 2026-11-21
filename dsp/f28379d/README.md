@@ -16,8 +16,7 @@ Motor PWM is **20 kHz**. SPI uses **10 MHz, 16-bit words, Linux mode 1**, with
 96 words / 192 bytes per full-duplex frame. Telemetry combines the newest values
 under one frame timestamp; acquisition is not simultaneous. CPU2 publishes
 through double-buffered message RAM with sequence checks. CPU1 invalidates its
-channels after 10 ms without a fresh snapshot. CLA controller files are retained
-but excluded from active builds.
+channels after 10 ms without a fresh snapshot.
 
 Boot/disarm/fault clears motor duty, STBY/shared EN, DO and DAC commands. A
 **50 ms** active-command timeout latches a fault. The host synchronizes a session,
@@ -28,30 +27,6 @@ are not implemented. UI **Reset zero** changes the host offset, not DSP counts.
 See the [state machine and SPI command reference](../DSP_FINITE_STATE_MACHINE.md)
 for command guards, transitions and complete RX/TX word layouts.
 
-## Known issues (future fix)
-
-### 1. Unnecessary position references in SPI frames
-
-Protocol v5 still sends six host position references in command words **24–35**
-and echoes them in telemetry words **70–81**. The DSP only stores and echoes
-these values; they do not affect motor control or safety. The Pi generates the
-references and uses them locally to calculate duty, and its recorder already
-records the host reference values.
-
-Removing these fields from the SPI payload is deferred to a future batch of
-fixes. Keep the current frame layout until that coordinated host/firmware
-protocol update; the Pi's local reference generation remains necessary.
-
-### 2. Telemetry structure clean-up
-- We should keep total frame word count 96, while keeping both crc at the end (position 95) for both tx and rx. In between we can still have reserved words, whose values need to be filled 0 or the crc won't pass. 
-
-### 3. Expanding IOs
-- I do want expand the IO a bit, it can be motor, DIO, AIO, etc. So we can make the best use of the system. We need to still keep the performance as the top priority.
-- I want to also calculate the pins needed to do FOC in the future. I want to support at least 4 brushless motors. It can be sharing the pins with the DC motors, just I want to plan ahead so I can design the PCB, with the motor drive part modulized and can be swapped between brushed and brushless motors. For now I feel like 3 dc motor swapped with 2 brushless motors is a reasonale desing. The firmware does not need to support the swap online. This can be a config that needs flashing the firmware. We also do not need to do the firmware development for the brushless motors either. We only need to check the resources and reserve the pins. 
-### 4. Rename the states
-- DISARM -> IDLE
-- ACTIVE -> RUNNING
-- SYNC -> INIT
 ## Active pin map
 
 Numbers are **HSEC dock pins**, not GPIO numbers. Software axes 0–5 correspond
@@ -102,14 +77,26 @@ reset on index is disabled.
 | Logic ground | 135 or 157 | GND | Common Pi/DSP/translator/driver logic ground |
 
 DACs use ADCA VREFHI; ADCB uses its own reference. Both controlCARD SW2 reference
-switches were reported right / nominal **3.0 V** on 2026-11-11; absolute voltage
-is unmeasured, so the UI reports raw codes. Keep analog inputs within 0–Vref.
-Pins 9/11 are **DAC outputs**, replacing old current-input reservations.
+switches on the bench were reported right (nominal **3.0 V**). Absolute reference
+voltage is unmeasured, so the UI reports raw codes. Keep analog inputs within 0–Vref.
+Pins 9/11 are **DAC outputs**.
 Dock pin 122 is GPIO36, not a power supply.
 
-See the [full wiring reference](../../PLAN/wiring_table.md) for receiver wiring,
-reserved pins and test jumpers. Remove encoder-test jumpers before connecting
-actual encoders; otherwise DO changes also drive those encoder inputs.
+### Receiver and driver wiring
+
+The HEDL-5540 connector uses pin 2 (red) for 5 V and pin 3 (orange) for ground. A+/A− are pins 5/6 (green/blue), B+/B− are 7/8 (violet/grey) and I+/I− are 9/10 (white/black). Pins 1 and 4 are open. The MC3486 receives each differential pair. Its 5 V outputs feed the TXS0108E B side. Connect the matching 3.3 V A-side outputs to the dock encoder pins above. VCCA is 3.3 V, VCCB is 5 V and OE has a 10 kΩ pull-down. Axes 3–5 use only A/B.
+
+On the MC33926 PCB, connect PWM and DIR as labeled, each STBY to its D2 input and shared MOTOR_EN to the board EN inputs. D1 is grounded. SF and FB are unavailable to the DSP. Use common logic ground and keep the motor-current return off the dock jumpers. The physical E-stop is independent of software. See the [hardware datasheets](../../doc/datasheets/).
+
+### Dock loopback tests
+
+Stop the Pi bridge before using the [standalone endpoint test](../../tests/hardware_endpoint_test.cpp). Compile it on the Pi with `c++ -std=c++17 -O2 tests/hardware_endpoint_test.cpp -o /tmp/hardware_endpoint_test`. The test arms general I/O with a zero motor mask. Fit jumpers for the selected test and use a common logic ground.
+
+| Test option | Dock connections |
+|---|---|
+| `--loopback` | DO→DI 121→85, 122→87, 123→147, 124→148. DAC→ADC 9→12 and 11→14. |
+| `--all-analog` | DAC0 pin 9 fans out to 12/18/24. DAC1 pin 11 fans out to 14/20/26. Keep the two groups separate. |
+| `--encoders` | Replace DO→DI jumpers with 121→75, 122→79, 123→80 and 124→77/81/88. Remove these jumpers before connecting physical encoders. |
 
 ## Build and upload
 
@@ -192,7 +179,7 @@ RAM on connect**. Loading symbols alone does not prevent that connection-time
 reset. Use SPI/UI telemetry for observation that must not interrupt operation.
 
 **Halting is not a motor stop:** PWM/eQEP peripherals free-run, and CPU1's
-software watchdog cannot execute while CPU1 is halted. Stop outputs before
+command timeout cannot execute while CPU1 is halted. Stop outputs before
 debugging. Halting CPU2 makes its encoder data stale to CPU1.
 
 | Core | Useful watch expressions | Expected / meaning |
@@ -222,12 +209,7 @@ measurements and inspect the diagnostic globals instead.
 | `cpu2/main.c`, `shared/ipc_layout.h` | Quadrature polling and inter-core data layout |
 | `../common/{protocol,endpoint,quadrature}.h` | Wire codec, endpoint state machine, decoder |
 | `device/`, `cpu*/2837xD_*_lnk_cpu*.cmd` | Device startup and RAM/FLASH memory layout |
-| `../host/spi.hpp` | Matching Pi transport; `legacy_spi.hpp` is for old firmware |
+| `../host/spi.hpp` | Pi SPI v5 transport |
 | `../../scripts/{build_dsp.py,load_dsp.js}` | Build and load/verify helpers |
 
-RAM/FLASH two-axis regressions, standalone boot, four digital loopbacks, both
-DACs into all six ADC inputs, and three CPU2 functional encoder tests passed.
-Full-speed CPU2 encoders, other physical motor channels and absolute analog
-calibration remain outside that coverage. See [test evidence](../../PLAN/STAGE3_RESULTS.md),
-[protocol details](../../PLAN/spi_protocol.md) and
-[host operation/tests](../../PLAN/STAGE2_OPERATION.md).
+See the [system verification guide](../../doc/verification.md) for software tests, bench checks and their coverage.

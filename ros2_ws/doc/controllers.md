@@ -5,7 +5,7 @@ feedback implementation, the reference limiter state and tuning configuration.
 The bridge supplies target, measured position, counts per configured position unit and the 0.0005 s period;
 the block exposes its applied reference and returns normalized motor duty.
 
-PID and Step Recorder are implemented. LQR awaits the owner's state model. Adding a new controller
+The compiled registry provides PID and Step Recorder. Adding a new controller
 requires C++ code, a compiled parameter descriptor and rebuild. There is no
 runtime code loading or block-diagram editor.
 
@@ -32,14 +32,16 @@ The positive finite rate is stored even when bypassed so switching modes preserv
 its setting. Unknown reference modes/fields and old schema versions are rejected;
 all shipped profiles have been explicitly migrated to schema 2.
 
-- `bench_pid`: the existing gains, 50 Hz D filtering and explicit 20 mm/s slew limiting.
-- `research_pid`: the same gains with passthrough reference and D filtering bypassed.
+The [shipped controller profiles](../../projects/heart_phantom/controllers/) define the startup tuning. The bridge loads a private copy for each axis. `bench_pid` and `test_profile` use passthrough and a 50 Hz D filter. `breathing_smooth` uses the same saved gains with a 50 mm/s slew limit on a linear axis. `research_pid` uses passthrough with D filtering bypassed. Active parameters are available from the axis inspector and `/bridge/state`.
+
+## PID behavior
+
 - Gain units remain duty/count, duty/(count·s), and duty·s/count. There is no
   automatic gain-unit conversion when displaying millimeters.
 - PID differentiates error with a backward difference at 2 kHz:
   `e = (reference - position) * counts_per_unit`,
   `raw_d = (e - previous_e) / 0.0005`, `D = kd * filtered_d`,
-  `duty = motor_sign * clamp(kp * e + I + D, -duty_limit, duty_limit)`.
+  `wire_duty = direction * motor_sign * clamp(kp * e + I + D, -duty_limit, duty_limit)`, where `direction = −1` for a reversed axis.
   D is zero on the first tick after reset. `d_filter_hz = 0` bypasses filtering;
   otherwise a first-order low-pass uses `tau = 1 / (2*pi*d_filter_hz)` and
   `filtered_d += dt/(tau + dt) * (raw_d - filtered_d)` (backward Euler).
@@ -81,14 +83,11 @@ Apply results. Subsequent commands from other ROS nodes can still change the
 active configuration; `/bridge/state` and the panel reflect those changes.
 
 Calibration, polarity, the UI slider range and duty cap are separate axis settings.
-`minimum_mm`/`maximum_mm` set the slider display range (currently ±50 mm), not
-travel protection. Numeric targets, ROS references and CSV programs may exceed
+`minimum_mm`/`maximum_mm` set the linear slider display range. Numeric targets, ROS references and CSV programs may exceed
 that range. Enabling outside it is allowed and PWM is not stopped on crossing it.
 Reference values must still be finite and representable as signed 32-bit DSP
 encoder-count references. The bridge has no tracking-error threshold: a large
 reference error remains an input to the controller and does not disable outputs.
-Future application-specific motion protection, such as detecting a stalled axis,
-belongs in a separate safety module; that module is not implemented yet.
 Logging can include input target, applied reference, PID gains and `d_filter_hz`,
 limiter mode/rate, requested duty and DSP-reported duty. Initial axis configuration
 is also included in CSV comments.
@@ -136,4 +135,4 @@ From ROS use `/bridge/command` with operation `step_start`, zero-based `axis` an
 
 ## Adding a compiled controller
 
-Add an independent implementation and parameter descriptor to `controllers.hpp`. Keep the controller's per-axis state inside its implementation and populate the numerical trace during its tick. For additional internal signals, add fixed-size fields to `ControllerSignals` and catalog entries in `recorder.hpp`. Add a matching Markdown file in `doc/diagrams/<type>.md`, a project YAML profile, then rebuild. Frame matching is shared by every implementation. A future ILC with an inner PID can own its update law and memory without a runtime cascade editor.
+Add an independent implementation and parameter descriptor to `controllers.hpp`. Keep the controller's per-axis state inside its implementation and populate the numerical trace during its tick. For additional internal signals, add fixed-size fields to `ControllerSignals` and catalog entries in `recorder.hpp`. Add a matching Markdown file in `ros2_ws/doc/diagrams/<type>.md`, a project YAML profile, then rebuild. Frame matching is shared by every implementation.

@@ -134,7 +134,7 @@ SECTIONS
    CpuToCla1MsgRAM  : > CPUTOCLA1MSGRAM, PAGE = 1
    Cla1ToCpuMsgRAM  : > CLA1TOCPUMSGRAM, PAGE = 1
 
-   /* CLA data RAM (RAMLS5 configured CPU+CLA1 dual access in cla_setup.c)  */
+   /* CLA data RAM allocation  */
    Cla1DataRam0     : > RAMLS5,     PAGE = 1
    .scratchpad      : > RAMLS5,     PAGE = 1
 

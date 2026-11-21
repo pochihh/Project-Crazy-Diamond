@@ -81,8 +81,7 @@ After settling, the robot stops the approach, loads the sine and starts row zero
 DO0 and recording together. The zero coordinate is the bridge's existing startup
 or manually reset zero; this procedure does not reset encoders or define a new
 zero. PID gains and profile reference shaping stay in force. A sine still starts
-with its specified velocity; this removes the initial position step, not the
-power demand of a fast waveform or the unresolved SPI timing issue.
+with its specified velocity; the initial position is continuous with the settled zero.
 
 The panel reports preparation/settling phases while the Start request is pending
 and leaves Stop available. ROS clients can identify the approach through the

@@ -1,14 +1,6 @@
 # Build, deployment and operation
 
-Canonical checkouts:
-
-- Laptop: `/Users/toby/Projects/Project-Crazy-Diamond`
-- Pi: `/home/toby/Project-Crazy-Diamond`
-- Shared Git repository: `pochihh/Project-Crazy-Diamond`; deployed releases use `main`.
-
-Use Git to synchronize source. Do not run from the old `crazy-diamond-stage2`
-checkout. Generated builds, `.local` credentials/evidence, recordings and uploaded
-programs are ignored. Runtime programs and recordings need their own backup.
+Use the same Git repository on the laptop and Pi. The systemd units run from `/home/toby/Project-Crazy-Diamond` on the Pi. Save and commit any tuning changes you want to share before pulling. Recordings, uploaded programs, credentials and build products are machine-local.
 
 ## Build on the Pi
 
@@ -16,16 +8,17 @@ programs are ignored. Runtime programs and recordings need their own backup.
 cd ~/Project-Crazy-Diamond
 git pull --ff-only
 bash scripts/build_ros.sh
+npm --prefix web_ui ci
 npm --prefix web_ui test
 npm --prefix web_ui run build
 ```
 
-ROS 2 Jazzy is installed under `/opt/ros/jazzy` on the Pi's PREEMPT_RT Linux setup.
+Use Node.js 22.12 or newer in the Node 22 series for the web build. ROS 2 Jazzy is installed under `/opt/ros/jazzy` on the Pi's PREEMPT_RT Linux setup.
 `build_ros.sh` discovers generic packages in `ros2_ws/src` and optional packages
 in `robots`. It builds and runs tests with colcon. There is no DSP rebuild in a
-host-only change. Follow the linked DSP guide for CCS RAM/FLASH builds and upload.
+host-only change. See the [DSP hardware guide](../../dsp/f28379d/README.md#build-and-upload) for RAM/FLASH builds and upload.
 
-Stop the affected services before replacing an active build, then restart them.
+For a host deployment, finish active experiments, use Stop All and stop the affected services before replacing their build. Restart those services after the tests pass.
 A bridge restart starts disarmed and captures new startup zeros.
 
 `projects/<project>/bridge.yaml` sets `disarm_on_deadline_miss`. It is a startup-only
@@ -53,7 +46,15 @@ FIFO 80. The bridge requires RT priority and locked-memory limits from its unit.
 A robot/data/UI restart does not automatically restart the bridge. No service
 automatically starts motion or a recording.
 
-The Python service scripts use the verified `config/fastdds-loopback.xml`
+To install or update the supplied units on this Pi, run the following from the repository root after a successful build:
+
+```bash
+sudo install -m 0644 scripts/diamond-*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now diamond-bridge diamond-data diamond-ui diamond-phantom
+```
+
+The Python service scripts use the `config/fastdds-loopback.xml`
 transport profile. The installed ROS deployment is local to the Pi. Browser
 access uses the LAN. Remote ROS clients require an explicit discovery/transport
 configuration change; embedding a panel does not require that change.
@@ -75,13 +76,7 @@ UI slider ranges and SPI device. For another project, supply `projects/<id>/proj
 services. Profile parameters persist when saved; startup profile selection
 remains in the project YAML.
 
-Axes 0, 1 and 2 use the same 500-cycle encoder,
-×4 decoding, 91/6 gearbox, 30-tooth module-1 pinion: 321.846662696944 counts/mm.
-Axis 2 uses CPU1 eQEP3. Its PWM, STBY and DIR are dock pins 50, 52 and 62; encoder A, B and optional index are 127, 128 and 130. Shared motor enable is pin 71. The project selects `bench_pid`, motor sign −1 and duty cap 1 for axis 2. The Phantom sine program continues to use axes 0 and 1.
-
-The position sliders display ±50 mm relative to the captured startup origin.
-This is not an enforced travel limit; numeric input, ROS and CSV references can
-exceed it. Neither enabling outside that range nor PWM motion across it is blocked.
+The rack-and-pinion scale is `500 × 4 × (91/6) / (30π) = 321.846662696944` counts/mm. See the [bench table](../../doc/README.md#heart-phantom-bench) for the configured slider ranges. Numeric input, ROS and CSV references can exceed a slider range. Travel bounds are display settings.
 
 Disable a motor, move it manually, then Reset zero to establish another origin.
 The other axis can remain enabled. Browser reconnect/axis re-enable preserves
@@ -119,8 +114,7 @@ With `d = −1` for a reversed axis and `+1` otherwise, the bridge computes `pos
 
 Open the PCD UI at `http://<pi-address>:8000/`. The dashboard and Resources list use the project manifest’s axes in DSP channel order (one to six). Axis controls are independent of the
 optional robot panel. Expand an axis to use its slider, numeric target, zero or plot.
-On each collapsed card, position is on the left, target and error are in the middle, and the gear, Enable switch and duty meter are on the right. Expanding adds Reset zero and the target entry on one row, followed by the ruler slider and position plot. Click the card surface or its disclosure button to expand or collapse. The commands, switch and slider operate independently. The settings column starts empty. An axis gear selects that axis for Position/PWM mode and tuning. The Settings button opens web preferences. Clicking the selected gear or Settings again clears the column. Clicking the workspace preserves the selection. Switching pages clears the panel and its highlight. Drag the divider or focus it and press the left/right arrow keys to adjust the column width. The browser saves the width locally. On narrow screens the column docks below the workspace. The light meter band
-tracks recent magnitude peaks and falls at 25 percentage points per second.
+The axis gear opens that axis's settings. Changing pages clears the selection. Drag the divider to resize the settings panel. The browser remembers its width.
 
 The DSP card shows INIT until feedback is synchronized, IDLE for disarmed, RUNNING
 for active, and FAULT for a DSP fault. Start uses the bridge system-enable command.
@@ -151,8 +145,19 @@ statistics, not maxima for just the latest experiment.
 
 ## Mock development
 
-Launch `scripts/run_bridge.sh true`, data, UI and phantom scripts in a separate
-`ROS_DOMAIN_ID`, with test HTTP ports if physical services are also present.
-Mock scheduling is ordinary Linux scheduling; its deadline counts are not a
-physical realtime acceptance result. The mock plant validates workflows, not
-real controller dynamics. Never run two physical bridge owners on the SPI device.
+Set the same environment in four terminals on the development host, then run one script per terminal from the repository root. The distinct ports and ROS domain keep the simulated bench separate from the physical services.
+
+```bash
+export ROS_DOMAIN_ID=67 DIAMOND_PORT=18782 PHANTOM_PORT=18783
+export PHANTOM_PANEL_URL=http://localhost:18783/
+# Terminal 1
+bash scripts/run_bridge.sh true
+# Terminal 2
+bash scripts/run_data.sh
+# Terminal 3
+bash scripts/run_ui.sh
+# Terminal 4
+bash scripts/run_phantom.sh
+```
+
+Open `http://localhost:18782/` and verify the DSP badge shows MOCK. Use a separate checkout for mock experiments when preserving the production library, profiles or recordings matters. The mock plant checks commands, state and data flow. Realtime scheduling and SPI timing require the physical bridge.

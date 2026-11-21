@@ -61,6 +61,8 @@ success; a missing or mismatched read-back is an error, not a successful Apply.
 | `/data/program` | `interfaces/srv/LoadProgram` | Typed preloaded program: `name`, `channels[]`, row-major `values[]` |
 | `/data/runner` | `interfaces/srv/RunnerCommand` | `operation=start/stop`, `completion=hold/stop/loop`, `auto_enable`, `record`, `signals[]` |
 
+`/data/preview` publishes `interfaces/msg/DataPreview` with latest, minimum and maximum values from the live bridge. `/data/csv_preview` publishes `interfaces/msg/CsvPreview` for a loaded CSV. It retains the latest preview for late subscribers using transient-local durability. The web relay serves that preview at `GET /api/data/csv_preview?program_id=<id>`.
+
 `LoadProgram` channel IDs: 0–5 reference mm, 6–11 duty for axes 0–5,
 12–15 DO0–3, 16–17 AO0–1 raw codes, and 18–23 reference degrees for axes 0–5. Each reference must match the configured axis unit. Array width is `channels.size()`; values must
 contain complete rows. This management API allows robot nodes to prepare typed

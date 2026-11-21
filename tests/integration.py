@@ -21,8 +21,8 @@ def main():
         with urlopen(args.url + path, timeout=5) as response:
             return json.load(response)
 
-    def command(operation, axis=0, value=0, enabled=False):
-        body = json.dumps(dict(operation=operation, axis=axis, value=value, enabled=enabled)).encode()
+    def command(operation, axis=0, value=0, enabled=False, *, unit='mm'):
+        body = json.dumps(dict(operation=operation, axis=axis, value=value, enabled=enabled, unit=unit)).encode()
         request = Request(args.url + '/api/command', data=body, headers={'Content-Type': 'application/json'})
         with urlopen(request, timeout=5) as response:
             return json.load(response)
@@ -45,6 +45,7 @@ def main():
     initial = get('/api/state')
     assert initial.get('bridge_alive') and initial.get('connected'), 'Bridge must be connected before testing'
     assert initial['mock'] != args.physical, 'Use --physical only for an actual motor test'
+    assert initial['position_unit'][:2] == ['mm', 'mm'], 'This test expects two linear axes'
     assert not initial.get('recording'), 'Finish the current recording before testing'
     original_limits = initial['duty_limit'][:2]
     recording = False
@@ -66,7 +67,7 @@ def main():
         except HTTPError as e:
             assert e.code == 409
         rejections = get('/api/state')['input_rejections']
-        assert command('target', 0, 51)['published']
+        assert command('target', 0, 1, unit='deg')['published']
         wait(lambda s: s['input_rejections'] > rejections and s['target_mm'][0] == 2)
         command('record_start'); recording = True
         recording_started = time.monotonic()
@@ -106,7 +107,8 @@ def main():
                     assert e.code == 409
                 for duty in (0.03, -0.03):
                     command('pwm', a, duty)
-                    sample = wait(lambda s: abs(s['dsp']['duty'][a] - duty) < 0.001, 2)
+                    wire_duty = -duty if initial['reverse_direction'][a] else duty
+                    sample = wait(lambda s: abs(s['dsp']['duty'][a] - wire_duty) < 0.001, 2)
                     time.sleep(0.15)
                     command('pwm', a, 0)
                     wait(lambda s: abs(s['dsp']['duty'][a]) < 0.001)
